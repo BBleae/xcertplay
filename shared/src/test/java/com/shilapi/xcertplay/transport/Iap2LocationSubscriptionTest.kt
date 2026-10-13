@@ -29,6 +29,13 @@ class Iap2LocationSubscriptionTest {
         assertFalse(subscription.request(Iap2Messages.buildRaw(0xfffa) { void(4); u16(0x8004, 20) }))
         assertTrue(subscription.components.isEmpty())
     }
+    @Test fun sourceRecoveryCannotExpandThisLinksAdvertisedComponents() {
+        val subscription = Iap2LocationSubscription { 100 }
+        assertFalse(subscription.request(Iap2Messages.buildRaw(0xfffa) { void(4) }, setOf(1, 2)))
+        assertNull(subscription.filter("\$PASCD,newly-readable\r\n"))
+        assertTrue(subscription.request(Iap2Messages.buildRaw(0xfffa) { void(4) }, setOf(4)))
+        assertNotNull(subscription.filter("\$PASCD,newly-readable\r\n"))
+    }
     @Test fun multipleSentencesUseRepeatedNmeaParameters() {
         val fields = Iap2ParameterList.parse(Iap2LocationMessages.locationInformation(
             "\$GPGGA,x\r\n\$GPRMC,x\r\n").payload).asList()

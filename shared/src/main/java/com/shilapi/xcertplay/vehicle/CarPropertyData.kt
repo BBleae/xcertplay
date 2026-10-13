@@ -27,6 +27,13 @@ data class VehicleTelemetrySnapshot(
                 reading.sourceEventMillis?.let { now - it in 0..2_000 } == true
         }?.value as? Float)?.toDouble()
             ?.takeIf { it.isFinite() && it in 0.0..150.0 }
+    fun outsideTemperatureCelsius(now: Long): Double? {
+        if (platform != VehiclePlatform.STANDARD_ANDROID) return null
+        val reading = readings[STANDARD_OUTSIDE_TEMPERATURE] ?: return null
+        if (now - reading.elapsedRealtimeMillis !in 0..30_000 ||
+            reading.sourceEventMillis?.let { now - it in 0..30_000 } != true) return null
+        return (reading.value as? Float)?.toDouble()?.takeIf { it.isFinite() && it in -100.0..100.0 }
+    }
     fun gear(now: Long): VehicleGear? {
         return when (fresh(STANDARD_GEAR, now) as? Int) {
             1 -> VehicleGear.NEUTRAL; 2 -> VehicleGear.REVERSE
@@ -37,6 +44,7 @@ data class VehicleTelemetrySnapshot(
     companion object {
         const val STANDARD_SPEED = 0x11600207
         const val STANDARD_GEAR = 0x11400400
+        const val STANDARD_OUTSIDE_TEMPERATURE = 0x11600703
     }
 }
 

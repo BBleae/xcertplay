@@ -9,13 +9,13 @@ class Iap2LocationSubscription(private val now: () -> Long = { System.nanoTime()
         private set
     private var intervals = emptyMap<Int, Long>()
     private val lastSent = mutableMapOf<Int, Long>()
-    fun request(frame: Iap2Frame): Boolean {
+    fun request(frame: Iap2Frame, supported: Set<Int> = setOf(1, 2, 4)): Boolean {
         stop()
         return try {
             val fields = Iap2BodyReader.of(frame).list()
             require(fields.none { it.id in 1..7 && it.payload.isNotEmpty() })
             require(fields.none { it.id in 0x8000..0x8007 && it.payload.size != 4 })
-            components = fields.filter { it.id in 1..7 }.map { it.id }.toSet()
+            components = fields.filter { it.id in 1..7 }.map { it.id }.toSet().intersect(supported)
             intervals = fields.filter { it.id in 0x8001..0x8007 }.groupBy { it.id - 0x8000 }
                 .mapValues { (_, fields) -> fields.maxOf { field ->
                     field.payload.fold(0L) { value, byte -> (value shl 8) or (byte.toLong() and 0xff) }

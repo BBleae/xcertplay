@@ -210,7 +210,7 @@ class Iap2WirelessControlClient(
 
                     Iap2LocationMessages.START_LOCATION_INFORMATION -> {
                         onProgress("iap2 rx=0xfffa start-location-information")
-                        locationActive = if (locationSubscription.request(incoming)) {
+                        locationActive = if (locationSubscription.request(incoming, locationComponents)) {
                             locationProvider?.onRequested(locationSubscription.components.intersect(locationComponents))
                             startLocationUpdates(locationProvider, onProgress)
                         } else { locationProvider?.stop(); false }

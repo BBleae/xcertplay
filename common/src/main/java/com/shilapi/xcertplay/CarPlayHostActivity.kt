@@ -2069,6 +2069,10 @@ class CarPlayHostActivity : ComponentActivity() {
             selected = vehicleDataConfig.platform,
         ) { platform -> vehicleDataConfig = vehicleDataConfig.copy(platform = platform) })
         VehicleDataFeature.entries.forEach { feature ->
+            if (!feature.sourceImplemented) {
+                addView(menuText("${feature.label}: unavailable — ${feature.description}", 14f, MENU_SECONDARY))
+                return@forEach
+            }
             addView(settingsSwitchRow(
                 label = feature.label,
                 checked = vehicleDataConfig.isEnabled(feature),
@@ -3718,7 +3722,8 @@ class CarPlayHostActivity : ComponentActivity() {
         val config = createRuntimeConfig()
         val airPlayConfig = createAirPlayConfig(size)
         val vehicleProvider = if (vehicleDataConfig.isEnabled(VehicleDataFeature.EV_STATUS) ||
-            vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED)) {
+            vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED) ||
+            vehicleDataConfig.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) {
             com.shilapi.xcertplay.vehicle.CarPropertyVehicleProvider(
                 com.shilapi.xcertplay.vehicle.CarPropertyDataStore(
                     com.shilapi.xcertplay.vehicle.AndroidCarPropertyBackend(this),

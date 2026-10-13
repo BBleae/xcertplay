@@ -5,13 +5,17 @@ import com.shilapi.xcertplay.transport.Iap2LocationProvider
 import com.shilapi.xcertplay.transport.NmeaLocationEncoder
 
 /** Features with a concrete iAP2 mapping; vendor properties are never protocol field IDs. */
-enum class VehicleDataFeature(val label: String, val description: String, val defaultEnabled: Boolean) {
+enum class VehicleDataFeature(val label: String, val description: String, val defaultEnabled: Boolean, val sourceImplemented: Boolean = true) {
     ALTITUDE("GPS altitude", "Altitude in GGA, when available", true),
     GPS_SPEED("GPS speed", "Ground speed in RMC; independent of wheel speed", true),
     COURSE("GPS course", "Direction of travel in RMC, when available", true),
     ACCURACY("GPS accuracy", "Approximate HDOP from Android horizontal accuracy", true),
     WHEEL_SPEED("Wheel speed & gear", "PASCD dead reckoning; requires a compatible vehicle source", false),
     EV_STATUS("EV battery & range", "VehicleStatusUpdate; requires a compatible vehicle source", false),
+    OUTSIDE_TEMPERATURE("Outside temperature", "Standard Android °C property", false),
+    BAROMETRIC_PRESSURE("Barometric pressure", "No verified source adapter; protocol accepts millibar", false, false),
+    PASSENGER_SEAT("Passenger occupancy", "No verified seat-area source adapter", false, false),
+    WIPERS("Wiper timing", "No verified washer and wipe-duration source adapter", false, false),
 }
 
 data class VehicleDataConfig(val platform: VehiclePlatform = VehiclePlatform.STANDARD_ANDROID, val enabled: Set<VehicleDataFeature> = VehicleDataFeature.entries

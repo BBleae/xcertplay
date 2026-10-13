@@ -48,6 +48,15 @@ class CarPropertyDataTest {
         connected = false
         assertTrue(store.snapshot().readings.isEmpty())
     }
+    @Test fun standardOutsideTemperatureRequiresMatchingPlatformTypeAndFreshEvent() {
+        val reading = CarPropertyReading(VehicleTelemetrySnapshot.STANDARD_OUTSIDE_TEMPERATURE,
+            -1.6f, 100_000, "standard", 100_000)
+        val snapshot = VehicleTelemetrySnapshot(mapOf(reading.propertyId to reading), VehiclePlatform.STANDARD_ANDROID)
+        assertEquals(-1.6f.toDouble(), snapshot.outsideTemperatureCelsius(100_000))
+        assertNull(snapshot.copy(readings = mapOf(reading.propertyId to reading.copy(sourceEventMillis = 100))).outsideTemperatureCelsius(100_000))
+        assertNull(snapshot.copy(readings = mapOf(reading.propertyId to reading.copy(value = -2))).outsideTemperatureCelsius(100_000))
+        assertNull(snapshot.copy(readings = mapOf(reading.propertyId to reading.copy(value = Float.NaN))).outsideTemperatureCelsius(100_000))
+    }
     @Test fun permissionFailureDoesNotKeepPollingAndCloseClearsAllReadings() {
         var reads = 0
         var closed = false

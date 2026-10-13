@@ -9,7 +9,17 @@ import kotlin.math.roundToInt
 data class VehicleStatusSnapshot(
     val batteryPercent: Double? = null,
     val electricRangeKm: Double? = null,
+    val outsideTemperatureCelsius: Double? = null,
+    val barometricPressureMillibar: Int? = null,
+    val passengerSeatOccupied: Boolean? = null,
+    val wipers: VehicleWiperStatus? = null,
 )
+data class VehicleWiperStatus(val washerOn: Boolean? = null,
+    val wipeDurationMillis: Int? = null, val waitDurationMillis: Long? = null) {
+    fun isValid(): Boolean = (washerOn != null || wipeDurationMillis != null || waitDurationMillis != null) &&
+        (wipeDurationMillis == null || wipeDurationMillis in 0..65535) &&
+        (waitDurationMillis == null || waitDurationMillis in 0..0xffff_ffffL)
+}
 interface VehicleStatusProvider : AutoCloseable {
     fun snapshot(): VehicleStatusSnapshot?
     fun awaitSnapshot(timeoutMillis: Long): VehicleStatusSnapshot? = snapshot()
@@ -24,6 +34,10 @@ object Iap2VehicleStatus {
     fun capabilities(status: VehicleStatusSnapshot?): Set<Int> = buildSet {
         if (status?.batteryPercent?.let { it.isFinite() && it in 0.0..100.0 } == true) add(21)
         if (status?.electricRangeKm?.let { it.isFinite() && it in 0.0..65535.0 } == true) add(11)
+        if (status?.outsideTemperatureCelsius?.let { it.isFinite() && it in -100.0..100.0 } == true) add(4)
+        if (status?.barometricPressureMillibar?.let { it in 1..65535 } == true) add(18)
+        if (status?.passengerSeatOccupied != null) add(20)
+        if (status?.wipers?.isValid() == true) add(17)
     }
     fun update(status: VehicleStatusSnapshot, advertised: Set<Int>, requested: Set<Int>): Iap2Frame? {
         val range = status.electricRangeKm?.takeIf {
@@ -34,9 +48,23 @@ object Iap2VehicleStatus {
         val percent = status.batteryPercent?.takeIf {
             21 in advertised && it.isFinite() && it in 0.0..100.0
         }
-        if (range == null && percent == null) return null
+        val temperature = status.outsideTemperatureCelsius?.takeIf {
+            4 in advertised && 4 in requested && it.isFinite() && it in -100.0..100.0
+        }
+        val pressure = status.barometricPressureMillibar?.takeIf { 18 in advertised && 18 in requested && it in 1..65535 }
+        val passenger = status.passengerSeatOccupied?.takeIf { 20 in advertised && 20 in requested }
+        val wiper = status.wipers?.takeIf { 17 in advertised && 17 in requested && it.isValid() }
+        if (range == null && percent == null && temperature == null && pressure == null && passenger == null && wiper == null) return null
         return Iap2Messages.buildRaw(UPDATE) {
+            temperature?.let { i16(4, it.roundToInt()) }
             range?.let { u16(11, it.toInt()) }
+            wiper?.let { state -> group(17) {
+                state.washerOn?.let { bool(0, it) }
+                state.wipeDurationMillis?.let { u16(1, it) }
+                state.waitDurationMillis?.let { u32(2, it) }
+            } }
+            pressure?.let { u16(18, it) }
+            passenger?.let { bool(20, it) }
             percent?.let { u32(24, (it * 1_000).roundToInt()) }
         }
     }

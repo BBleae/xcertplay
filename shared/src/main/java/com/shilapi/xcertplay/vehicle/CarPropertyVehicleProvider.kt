@@ -23,7 +23,11 @@ class CarPropertyVehicleProvider(
         if (started) return true
         if (!store.connect()) return false
         started = true
-        val ids = emptyList<Int>()
+        val ids = buildList {
+            if (config.platform == VehiclePlatform.STANDARD_ANDROID && config.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) {
+                add(VehicleTelemetrySnapshot.STANDARD_OUTSIDE_TEMPERATURE)
+            }
+        }
         var ticks = 0
         worker.scheduleWithFixedDelay({
             if (!closed) {
@@ -36,7 +40,7 @@ class CarPropertyVehicleProvider(
         return true
     }
     override fun awaitSnapshot(timeoutMillis: Long): VehicleStatusSnapshot? {
-        if (!started || closed || !config.isEnabled(VehicleDataFeature.EV_STATUS)) return snapshot()
+        if (!started || closed || !config.isEnabled(VehicleDataFeature.EV_STATUS) && !config.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) return snapshot()
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000
         synchronized(sampleReady) {
             while (!closed && snapshot() == null) {
@@ -74,11 +78,13 @@ class CarPropertyVehicleProvider(
     }
     fun telemetry() = store.snapshot()
     override fun snapshot(): VehicleStatusSnapshot? {
-        if (closed || !config.isEnabled(VehicleDataFeature.EV_STATUS)) return null
+        if (closed) return null
         val sample = store.snapshot()
-        val percent = sample.batteryPercent(now())
-        val range = sample.rangeKm(now())
-        return if (percent == null && range == null) null else VehicleStatusSnapshot(percent, range)
+        val percent = sample.batteryPercent(now()).takeIf { config.isEnabled(VehicleDataFeature.EV_STATUS) }
+        val range = sample.rangeKm(now()).takeIf { config.isEnabled(VehicleDataFeature.EV_STATUS) }
+        val temperature = sample.outsideTemperatureCelsius(now()).takeIf { config.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE) }
+        return if (percent == null && range == null && temperature == null) null
+            else VehicleStatusSnapshot(percent, range, outsideTemperatureCelsius = temperature)
     }
     @Synchronized override fun close() {
         if (closed) return

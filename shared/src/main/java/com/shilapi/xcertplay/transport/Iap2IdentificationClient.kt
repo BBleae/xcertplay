@@ -240,7 +240,8 @@ class Iap2IdentificationClient(private val session: Iap2Session) {
                     group(20) {
                         u16(0, 3)
                         string(1, config.name)
-                        u8(2, 2) // electric; no invented charging connectors or routing models
+                        if (config.vehicleStatusCapabilities.any { it == 11 || it == 21 }) u8(2, 2)
+                        // No guessed engine, connectors or routing models for temperature-only sources.
                         string(6, config.name)
                     }
                     group(21) {
