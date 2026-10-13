@@ -35,6 +35,7 @@ interface Iap2LocationProvider : AutoCloseable {
     /** Acquire a source without granting a phone subscription. */
     fun prewarm(): Boolean = start()
     fun onRequested(components: Set<Int>) = Unit
+    fun supportedComponents(): Set<Int> = setOf(1, 2)
 
     fun stop()
 

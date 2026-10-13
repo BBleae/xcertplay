@@ -42,7 +42,13 @@ class Iap2WiredControlClient(
 
         val vehicleReporter = Iap2VehicleStatusReporter(vehicleStatusProvider,
             Iap2VehicleStatus.capabilities(vehicleStatusProvider?.awaitSnapshot(2_000)))
-        val controlIdentification = identification.copy(vehicleStatusCapabilities = vehicleReporter.advertised)
+        val locationComponents = locationProvider?.supportedComponents().orEmpty()
+        val controlIdentification = identification.copy(
+            vehicleStatusCapabilities = vehicleReporter.advertised,
+            locationInformationEnabled = locationComponents.isNotEmpty(),
+            gpsLocationEnabled = locationComponents.any { it == 1 || it == 2 },
+            vehicleSpeedEnabled = 4 in locationComponents,
+        )
         val bringUpDeadlineNanos = deadlineAfter(bringUpTimeoutMillis)
         Iap2IdentificationClient(session).identify(
             controlIdentification,
@@ -119,7 +125,7 @@ class Iap2WiredControlClient(
                     Iap2LocationMessages.START_LOCATION_INFORMATION -> {
                         onProgress("iap2 rx=0xfffa start-location-information")
                         locationActive = if (locationSubscription.request(incoming)) {
-                            locationProvider?.onRequested(locationSubscription.components)
+                            locationProvider?.onRequested(locationSubscription.components.intersect(locationComponents))
                             startLocationUpdates(locationProvider, onProgress)
                         } else { locationProvider?.stop(); false }
                         locationSentLogged = false

@@ -10,25 +10,29 @@ class CarPropertyVehicleProvider(
     private val store: CarPropertyDataStore,
     private val config: VehicleDataConfig,
     private val now: () -> Long,
-) : VehicleStatusProvider {
+) : VehicleStatusProvider, com.shilapi.xcertplay.transport.VehicleSpeedSource {
     private val sampleReady = Object()
     private val worker = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "vehicle-read-only").apply { isDaemon = true }
     }
     @Volatile private var closed = false
     @Volatile private var started = false
+    @Volatile private var speedRequested = false
     @Synchronized fun start(): Boolean {
         if (closed) return false
         if (started) return true
         if (!store.connect()) return false
         started = true
         val ids = emptyList<Int>()
-        if (ids.isNotEmpty()) worker.scheduleWithFixedDelay({
+        var ticks = 0
+        worker.scheduleWithFixedDelay({
             if (!closed) {
-                store.refresh(ids)
+                if (ticks++ % 5 == 0) store.refresh(ids)
+                if (speedRequested) store.refresh(listOf(VehicleTelemetrySnapshot.STANDARD_SPEED,
+                    VehicleTelemetrySnapshot.STANDARD_GEAR))
                 synchronized(sampleReady) { sampleReady.notifyAll() }
             }
-        }, 0, 1, TimeUnit.SECONDS)
+        }, 0, 200, TimeUnit.MILLISECONDS)
         return true
     }
     override fun awaitSnapshot(timeoutMillis: Long): VehicleStatusSnapshot? {
@@ -42,6 +46,31 @@ class CarPropertyVehicleProvider(
             }
         }
         return snapshot()
+    }
+    override fun requestSpeed(enabled: Boolean) {
+        speedRequested = enabled && config.isEnabled(VehicleDataFeature.WHEEL_SPEED) && !closed
+    }
+    override fun latestSpeed(): com.shilapi.xcertplay.transport.VehicleSpeedReading? {
+        if (closed || !config.isEnabled(VehicleDataFeature.WHEEL_SPEED)) return null
+        val values = store.snapshot()
+        val speed = values.speedMetersPerSecond(now()) ?: return null
+        val gear = values.gear(now()) ?: return null
+        val timestamp = values.readings[VehicleTelemetrySnapshot.STANDARD_SPEED]?.sourceEventMillis ?: return null
+        return com.shilapi.xcertplay.transport.VehicleSpeedReading(timestamp, speed, gear)
+    }
+    override fun awaitSpeed(timeoutMillis: Long): com.shilapi.xcertplay.transport.VehicleSpeedReading? {
+        if (!started || closed || !config.isEnabled(VehicleDataFeature.WHEEL_SPEED)) return null
+        requestSpeed(true) // bounded preflight acquisition, never a phone-send authorization
+        val deadline = System.nanoTime() + timeoutMillis * 1_000_000
+        synchronized(sampleReady) {
+            while (!closed && latestSpeed() == null) {
+                val remaining = (deadline - System.nanoTime()) / 1_000_000
+                if (remaining <= 0) break
+                sampleReady.wait(remaining)
+            }
+        }
+        requestSpeed(false)
+        return latestSpeed()
     }
     fun telemetry() = store.snapshot()
     override fun snapshot(): VehicleStatusSnapshot? {

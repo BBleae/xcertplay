@@ -3717,7 +3717,8 @@ class CarPlayHostActivity : ComponentActivity() {
         updateDebugOverlays()
         val config = createRuntimeConfig()
         val airPlayConfig = createAirPlayConfig(size)
-        val vehicleProvider = if (vehicleDataConfig.isEnabled(VehicleDataFeature.EV_STATUS)) {
+        val vehicleProvider = if (vehicleDataConfig.isEnabled(VehicleDataFeature.EV_STATUS) ||
+            vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED)) {
             com.shilapi.xcertplay.vehicle.CarPropertyVehicleProvider(
                 com.shilapi.xcertplay.vehicle.CarPropertyDataStore(
                     com.shilapi.xcertplay.vehicle.AndroidCarPropertyBackend(this),
@@ -3725,7 +3726,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 ), vehicleDataConfig, android.os.SystemClock::elapsedRealtime,
             ).also { it.start() }
         } else null
-        val locationProvider: Iap2LocationProvider? =
+        val positionProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) {
                 VehicleLocationProvider(
                     AndroidCarPlayLocationProvider(this), vehicleDataConfig,
@@ -3734,6 +3735,9 @@ class CarPlayHostActivity : ComponentActivity() {
             } else {
                 null
             }
+        val locationProvider = if (vehicleProvider != null && vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED))
+            com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider(positionProvider, vehicleProvider)
+            else positionProvider
         appendLog(
             "Starting CarPlay controller at ${size.width}x${size.height} -> " +
                 "${airPlayConfig.main.widthPixels}x${airPlayConfig.main.heightPixels} " +

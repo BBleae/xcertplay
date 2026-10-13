@@ -53,6 +53,8 @@ data class Iap2IdentificationConfig(
     val wireless: Iap2WirelessIdentification? = null,
     /** Advertises and enables iAP2 LocationInformation from the accessory to the phone. */
     val locationInformationEnabled: Boolean = false,
+    val gpsLocationEnabled: Boolean = true,
+    val vehicleSpeedEnabled: Boolean = false,
     val vehicleStatusCapabilities: Set<Int> = emptySet(),
     /** USB-IF identity used by StartHID; defaults match this app's existing AirPlay HID identity. */
     val hidVendorIdentifier: Int = 2,
@@ -251,8 +253,8 @@ class Iap2IdentificationClient(private val session: Iap2Session) {
                     group(22) {
                         u16(0, 0)
                         string(1, config.name)
-                        void(17)
-                        void(18)
+                        if (config.gpsLocationEnabled) { void(17); void(18) }
+                        if (config.vehicleSpeedEnabled) void(20)
                     }
                 }
                 if (wireless != null) {
