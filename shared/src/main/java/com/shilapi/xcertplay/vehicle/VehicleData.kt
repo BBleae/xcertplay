@@ -14,7 +14,7 @@ enum class VehicleDataFeature(val label: String, val description: String, val de
     EV_STATUS("EV battery & range", "VehicleStatusUpdate; requires a compatible vehicle source", false),
 }
 
-data class VehicleDataConfig(val enabled: Set<VehicleDataFeature> = VehicleDataFeature.entries
+data class VehicleDataConfig(val platform: VehiclePlatform = VehiclePlatform.STANDARD_ANDROID, val enabled: Set<VehicleDataFeature> = VehicleDataFeature.entries
     .filter { it.defaultEnabled }.toSet()) {
     fun isEnabled(feature: VehicleDataFeature) = feature in enabled
     fun with(feature: VehicleDataFeature, value: Boolean) = copy(

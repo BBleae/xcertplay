@@ -2062,6 +2062,12 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun buildVehicleDataSection(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(buildLocationReportingSection())
+        val platforms = com.shilapi.xcertplay.vehicle.VehiclePlatform.entries
+        addView(settingsChoiceRow(
+            label = "Vehicle property source",
+            options = listOf(platforms[0] to "Standard Android Automotive"),
+            selected = vehicleDataConfig.platform,
+        ) { platform -> vehicleDataConfig = vehicleDataConfig.copy(platform = platform) })
         VehicleDataFeature.entries.forEach { feature ->
             addView(settingsSwitchRow(
                 label = feature.label,

@@ -8,7 +8,7 @@ class VehicleDataTest {
     @Test fun filtersOptionalGpsFieldsWithoutInventingZeroValues() {
         val fix = CarPlayLocationFix(31.0, 121.0, 50.0, 80.0, 20.0, 5.0, 1_000)
         val provider = VehicleLocationProvider(Source(VehicleLocationSample(fix, 100)),
-            VehicleDataConfig(emptySet()), { 100 })
+            VehicleDataConfig(enabled = emptySet()), { 100 })
         provider.start()
         val sentences = provider.latestNmea()!!.split("\r\n")
         assertTrue(sentences[0].contains(",,,M,"))

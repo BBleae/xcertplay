@@ -417,14 +417,18 @@ object AirPlayPersistence {
     fun loadVehicleDataConfig(context: Context): com.shilapi.xcertplay.vehicle.VehicleDataConfig {
         val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return com.shilapi.xcertplay.vehicle.VehicleDataConfig(
-            com.shilapi.xcertplay.vehicle.VehicleDataFeature.entries.filter {
+            enabled = com.shilapi.xcertplay.vehicle.VehicleDataFeature.entries.filter {
                 preferences.getBoolean("vehicle_data_${it.name}", it.defaultEnabled)
             }.toSet(),
+            platform = runCatching { com.shilapi.xcertplay.vehicle.VehiclePlatform.valueOf(
+                preferences.getString("vehicle_data_platform", "STANDARD_ANDROID")!!)
+            }.getOrDefault(com.shilapi.xcertplay.vehicle.VehiclePlatform.STANDARD_ANDROID),
         )
     }
 
     fun saveVehicleDataConfig(context: Context, config: com.shilapi.xcertplay.vehicle.VehicleDataConfig) {
         val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString("vehicle_data_platform", config.platform.name)
         com.shilapi.xcertplay.vehicle.VehicleDataFeature.entries.forEach {
             editor.putBoolean("vehicle_data_${it.name}", config.isEnabled(it))
         }
