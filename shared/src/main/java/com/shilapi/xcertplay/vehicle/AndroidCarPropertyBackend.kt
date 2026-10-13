@@ -33,13 +33,20 @@ class AndroidCarPropertyBackend(context: Context) : ReadOnlyCarPropertyBackend {
             false
         }
     }
-    override fun read(propertyId: Int): Number? {
+    override val isConnected: Boolean get() = !closed && manager != null
+    override fun read(propertyId: Int): CarPropertyValue? {
         val target = manager ?: return null
-        val result = target.javaClass.getMethod("getProperty", Int::class.javaPrimitiveType,
-            Int::class.javaPrimitiveType).invoke(target, propertyId, 0) ?: return null
+        val result = try {
+            target.javaClass.getMethod("getProperty", Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType).invoke(target, propertyId, 0)
+        } catch (error: java.lang.reflect.InvocationTargetException) {
+            throw (error.targetException as? Exception ?: error)
+        } ?: return null
         val status = result.javaClass.getMethod("getStatus").invoke(result) as? Int ?: return null
         if (status != 0) return null
-        return result.javaClass.getMethod("getValue").invoke(result) as? Number
+        val value = result.javaClass.getMethod("getValue").invoke(result) as? Number ?: return null
+        val eventNanos = result.javaClass.getMethod("getTimestamp").invoke(result) as? Long
+        return CarPropertyValue(value, eventNanos?.takeIf { it > 0 }?.div(1_000_000))
     }
     override fun close() {
         closed = true

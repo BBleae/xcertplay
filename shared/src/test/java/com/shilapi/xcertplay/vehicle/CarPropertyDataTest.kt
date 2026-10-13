@@ -8,7 +8,7 @@ class CarPropertyDataTest {
         val values = mapOf(
             VehicleTelemetrySnapshot.STANDARD_SPEED to 12.5f,
             VehicleTelemetrySnapshot.STANDARD_GEAR to 2,
-        ).mapValues { CarPropertyReading(it.key, it.value, 100, "test") }
+        ).mapValues { CarPropertyReading(it.key, it.value, 100, "test", 100) }
         val snapshot = VehicleTelemetrySnapshot(values, VehiclePlatform.STANDARD_ANDROID)
         assertNull(snapshot.batteryPercent(100))
         assertNull(snapshot.rangeKm(100))
@@ -17,12 +17,43 @@ class CarPropertyDataTest {
         assertNull(snapshot.speedMetersPerSecond(2_101))
         assertNull(snapshot.gear(30_101))
     }
+    @Test fun pollingDoesNotReviveContinuousSamplesButUnchangedStatusRemainsValid() {
+        var now = 100L
+        var fail = false
+        var connected = true
+        val backend = object : ReadOnlyCarPropertyBackend {
+            override val isConnected get() = connected
+            override fun connect() = true
+            override fun read(propertyId: Int): CarPropertyValue {
+                if (fail) throw IllegalStateException("temporary transport failure")
+                return CarPropertyValue(if (propertyId == VehicleTelemetrySnapshot.STANDARD_SPEED) 12f else 8, 100)
+            }
+            override fun close() = Unit
+        }
+        val store = CarPropertyDataStore(backend, VehiclePlatform.STANDARD_ANDROID, { now })
+        val ids = listOf(VehicleTelemetrySnapshot.STANDARD_SPEED, VehicleTelemetrySnapshot.STANDARD_GEAR)
+        store.connect()
+        store.refresh(ids)
+        assertEquals(12.0, store.snapshot().speedMetersPerSecond(now))
+        now = 5_000
+        store.refresh(ids)
+        assertNull(store.snapshot().speedMetersPerSecond(now))
+        assertEquals(VehicleGear.DRIVE, store.snapshot().gear(now))
+        fail = true
+        store.refresh(ids)
+        assertTrue(store.snapshot().readings.isEmpty())
+        fail = false
+        store.refresh(ids)
+        assertEquals(VehicleGear.DRIVE, store.snapshot().gear(now))
+        connected = false
+        assertTrue(store.snapshot().readings.isEmpty())
+    }
     @Test fun permissionFailureDoesNotKeepPollingAndCloseClearsAllReadings() {
         var reads = 0
         var closed = false
         val backend = object : ReadOnlyCarPropertyBackend {
             override fun connect() = true
-            override fun read(propertyId: Int): Number { reads++; throw SecurityException("denied") }
+            override fun read(propertyId: Int): CarPropertyValue { reads++; throw SecurityException("denied") }
             override fun close() { closed = true }
         }
         val store = CarPropertyDataStore(backend, VehiclePlatform.STANDARD_ANDROID, { 100 })

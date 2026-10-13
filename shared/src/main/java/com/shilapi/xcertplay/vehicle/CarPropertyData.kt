@@ -8,6 +8,7 @@ data class CarPropertyReading(
     val value: Number,
     val elapsedRealtimeMillis: Long,
     val origin: String,
+    val sourceEventMillis: Long? = null,
 )
 
 data class VehicleTelemetrySnapshot(
@@ -21,7 +22,10 @@ data class VehicleTelemetrySnapshot(
     fun batteryPercent(now: Long): Double? = null
     fun rangeKm(now: Long): Double? = null
     fun speedMetersPerSecond(now: Long): Double? =
-        (fresh(STANDARD_SPEED, now, 2_000) as? Float)?.toDouble()
+        (readings[STANDARD_SPEED]?.takeIf { reading ->
+            now - reading.elapsedRealtimeMillis in 0..2_000 &&
+                reading.sourceEventMillis?.let { now - it in 0..2_000 } == true
+        }?.value as? Float)?.toDouble()
             ?.takeIf { it.isFinite() && it in 0.0..150.0 }
     fun gear(now: Long): VehicleGear? {
         return when (fresh(STANDARD_GEAR, now) as? Int) {
@@ -37,9 +41,11 @@ data class VehicleTelemetrySnapshot(
 }
 
 /** Backend remains injectable, so permissions and platform failures need no car to test. */
+data class CarPropertyValue(val value: Number, val sourceEventMillis: Long?)
 interface ReadOnlyCarPropertyBackend : AutoCloseable {
+    val isConnected: Boolean get() = true
     fun connect(): Boolean
-    fun read(propertyId: Int): Number?
+    fun read(propertyId: Int): CarPropertyValue?
 }
 
 class CarPropertyDataStore(
@@ -62,15 +68,16 @@ class CarPropertyDataStore(
         if (!connected) return
         for (id in ids) {
             if (id in unavailable) continue
-            val value = try { backend.read(id) } catch (_: Exception) {
-                unavailable += id
-                null
+            val value = try { backend.read(id) } catch (error: Exception) {
+                if (error is SecurityException || error is IllegalArgumentException ||
+                    error is UnsupportedOperationException) unavailable += id
+                null // transient failures invalidate immediately but recover on the next poll
             }
             if (value == null) readings.remove(id) else readings[id] =
-                CarPropertyReading(id, value, now(), "android.car/${platform.name}/0x${id.toString(16)}")
+                CarPropertyReading(id, value.value, now(), "android.car/${platform.name}/0x${id.toString(16)}", value.sourceEventMillis)
         }
     }
-    fun snapshot() = VehicleTelemetrySnapshot(readings.toMap(), platform)
+    fun snapshot() = VehicleTelemetrySnapshot(if (backend.isConnected) readings.toMap() else emptyMap(), platform)
     override fun close() {
         connected = false
         readings.clear()
