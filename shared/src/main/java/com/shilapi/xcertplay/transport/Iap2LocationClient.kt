@@ -32,6 +32,10 @@ interface Iap2LocationProvider : AutoCloseable {
     /** Starts location updates and returns whether at least one source was subscribed. */
     fun start(): Boolean
 
+    /** Acquire a source without granting a phone subscription. */
+    fun prewarm(): Boolean = start()
+    fun onRequested(components: Set<Int>) = Unit
+
     fun stop()
 
     fun latestNmea(): String?

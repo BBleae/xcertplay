@@ -63,6 +63,7 @@ class Iap2WiredControlClient(
 
         var forwardedFrames = 0
         var carPlayStartSessions = 0
+        val locationSubscription = Iap2LocationSubscription()
         var locationActive = false
         var locationSentLogged = false
         var hidStarted = false
@@ -80,7 +81,7 @@ class Iap2WiredControlClient(
             // The control session is long-lived. Poll timeouts only wake this loop; they do not end it.
             while (true) {
                 vehicleReporter.tick(::sendDuringControl)
-                if (locationActive && sendLatestLocation(locationProvider) && !locationSentLogged) {
+                if (locationActive && sendLatestLocation(locationProvider, locationSubscription) && !locationSentLogged) {
                     locationSentLogged = true
                     onProgress("iap2 tx=0xfffb location-information")
                 }
@@ -117,9 +118,12 @@ class Iap2WiredControlClient(
 
                     Iap2LocationMessages.START_LOCATION_INFORMATION -> {
                         onProgress("iap2 rx=0xfffa start-location-information")
-                        locationActive = startLocationUpdates(locationProvider, onProgress)
+                        locationActive = if (locationSubscription.request(incoming)) {
+                            locationProvider?.onRequested(locationSubscription.components)
+                            startLocationUpdates(locationProvider, onProgress)
+                        } else { locationProvider?.stop(); false }
                         locationSentLogged = false
-                        if (locationActive && sendLatestLocation(locationProvider)) {
+                        if (locationActive && sendLatestLocation(locationProvider, locationSubscription)) {
                             locationSentLogged = true
                             onProgress("iap2 tx=0xfffb location-information")
                         }
@@ -130,6 +134,7 @@ class Iap2WiredControlClient(
                         locationActive = false
                         locationSentLogged = false
                         locationProvider?.stop()
+                        locationSubscription.stop()
                     }
 
                     else -> {
@@ -161,8 +166,9 @@ class Iap2WiredControlClient(
 
     private fun sendLatestLocation(
         provider: Iap2LocationProvider?,
+        subscription: Iap2LocationSubscription,
     ): Boolean {
-        val sentence = provider?.latestNmea() ?: return false
+        val sentence = provider?.latestNmea()?.let(subscription::filter) ?: return false
         session.send(
             Iap2LocationMessages.locationInformation(sentence),
             CONTROL_SEND_TIMEOUT_MILLIS,

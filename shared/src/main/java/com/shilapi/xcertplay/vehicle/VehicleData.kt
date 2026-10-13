@@ -47,13 +47,18 @@ class VehicleLocationProvider(
     private val maxAgeMillis: Long = 30_000,
 ) : Iap2LocationProvider {
     private var subscribed = false
+    private var sourceStarted = false
+    override fun prewarm(): Boolean {
+        if (!sourceStarted) sourceStarted = source.start()
+        return sourceStarted
+    }
     override fun start(): Boolean {
-        if (subscribed) return true
-        subscribed = source.start()
+        subscribed = prewarm()
         return subscribed
     }
     override fun stop() {
-        if (subscribed) source.stop()
+        if (sourceStarted) source.stop()
+        sourceStarted = false
         subscribed = false
     }
     fun state(): VehicleDataState {

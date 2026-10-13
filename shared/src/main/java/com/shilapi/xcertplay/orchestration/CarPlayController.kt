@@ -809,7 +809,7 @@ class CarPlayController(
     private fun startPhone() {
         if (config.locationReportingEnabled) {
             val started = try {
-                locationProvider?.start() == true
+                locationProvider?.prewarm() == true
             } catch (error: Throwable) {
                 Log.w(
                     IphoneCarPlayConfiguration.TAG,
