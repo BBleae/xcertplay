@@ -61,23 +61,23 @@ object NmeaLocationEncoder {
         val hdop = fix.accuracyMeters
             ?.takeIf { it.isFinite() && it > 0 }
             ?.let { min(50.0, max(0.5, it / 5.0)) }
-            ?: 1.0
+            ?: null
         val altitude = fix.altitudeMeters
             ?.takeIf { it.isFinite() }
             ?.let { format("%.1f", it) }
-            ?: "0.0"
+            ?: ""
 
         val ggaBody = "GPGGA,$time,${latitude.value},${latitude.hemisphere}," +
-            "${longitude.value},${longitude.hemisphere},1,08,${format("%.1f", hdop)}," +
+            "${longitude.value},${longitude.hemisphere},1,08,${hdop?.let { format("%.1f", it) }.orEmpty()}," +
             "$altitude,M,0.0,M,,"
         val speedKnots = fix.speedMetersPerSecond
             ?.takeIf { it.isFinite() && it >= 0 }
             ?.let { format("%.2f", it * KNOTS_PER_METER_PER_SECOND) }
-            ?: "0.00"
+            ?: ""
         val course = fix.bearingDegrees
             ?.takeIf { it.isFinite() }
             ?.let { format("%.2f", it) }
-            ?: "0.00"
+            ?: ""
         val rmcBody = "GPRMC,$time,A,${latitude.value},${latitude.hemisphere}," +
             "${longitude.value},${longitude.hemisphere},$speedKnots,$course,$date,,"
 

@@ -414,6 +414,23 @@ object AirPlayPersistence {
             .apply()
     }
 
+    fun loadVehicleDataConfig(context: Context): com.shilapi.xcertplay.vehicle.VehicleDataConfig {
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return com.shilapi.xcertplay.vehicle.VehicleDataConfig(
+            com.shilapi.xcertplay.vehicle.VehicleDataFeature.entries.filter {
+                preferences.getBoolean("vehicle_data_${it.name}", it.defaultEnabled)
+            }.toSet(),
+        )
+    }
+
+    fun saveVehicleDataConfig(context: Context, config: com.shilapi.xcertplay.vehicle.VehicleDataConfig) {
+        val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        com.shilapi.xcertplay.vehicle.VehicleDataFeature.entries.forEach {
+            editor.putBoolean("vehicle_data_${it.name}", config.isEnabled(it))
+        }
+        editor.apply()
+    }
+
     fun loadManufacturer(context: Context): String =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_MANUFACTURER, null)

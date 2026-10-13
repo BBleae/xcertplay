@@ -66,6 +66,9 @@ import com.shilapi.xcertplay.airplay.AirPlaySessionListener
 import com.shilapi.xcertplay.airplay.CarPlayMediaEngine
 import com.shilapi.xcertplay.airplay.SafeAreaRect
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.vehicle.VehicleDataConfig
+import com.shilapi.xcertplay.vehicle.VehicleDataFeature
+import com.shilapi.xcertplay.vehicle.VehicleLocationProvider
 import com.shilapi.xcertplay.location.AndroidCarPlayLocationProvider
 import com.shilapi.xcertplay.media.AndroidMediaSink
 import com.shilapi.xcertplay.media.CarPlayTouchMapper
@@ -337,6 +340,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var hideTopBar = true
     private var hideBottomBar = true
     private var safeAreaDrawOutside = true
+    private var vehicleDataConfig = VehicleDataConfig()
     private var locationReportingEnabled = false
     private var locationPermissionAvailable = false
     private var microphoneAvailable = false
@@ -529,6 +533,7 @@ class CarPlayHostActivity : ComponentActivity() {
         hideTopBar = AirPlayPersistence.loadHideTopBar(this)
         hideBottomBar = AirPlayPersistence.loadHideBottomBar(this)
         safeAreaDrawOutside = AirPlayPersistence.loadSafeAreaDrawOutside(this)
+        vehicleDataConfig = AirPlayPersistence.loadVehicleDataConfig(this)
         locationReportingEnabled = AirPlayPersistence.loadLocationReportingEnabled(this)
         locationPermissionAvailable = hasFineLocationPermission()
         wirelessEnabled = AirPlayPersistence.loadWirelessEnabled(this)
@@ -940,14 +945,14 @@ class CarPlayHostActivity : ComponentActivity() {
         )
 
         content.addView(
-            settingsCategoryHeader("Location"),
+            settingsCategoryHeader("Vehicle data"),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { topMargin = dp(36) },
         )
         content.addView(
-            buildLocationReportingSection(),
+            buildVehicleDataSection(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1544,6 +1549,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveManualHotspotChannel(this, manualHotspotChannel)
         AirPlayPersistence.saveManualHotspotSecurity(this, manualHotspotSecurity)
         AirPlayPersistence.saveLocationReportingEnabled(this, locationReportingEnabled)
+        AirPlayPersistence.saveVehicleDataConfig(this, vehicleDataConfig)
         AirPlayPersistence.saveAutoStartOnBoot(this, autoStartOnBoot)
         AirPlayPersistence.saveAdvancedAudioChannelMapping(this, advancedAudioChannelMapping)
         AirPlayPersistence.saveMainMediaAudioBufferDurationMs(
@@ -2052,6 +2058,23 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun settingsCategoryHeader(title: String): TextView =
         menuText(title, 16f, MENU_ACCENT, bold = true)
+
+    private fun buildVehicleDataSection(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(buildLocationReportingSection())
+        VehicleDataFeature.entries.forEach { feature ->
+            addView(settingsSwitchRow(
+                label = feature.label,
+                checked = vehicleDataConfig.isEnabled(feature),
+                description = feature.description + "; applies when settings close",
+            ) { checked -> vehicleDataConfig = vehicleDataConfig.with(feature, checked) })
+        }
+        addView(menuText(
+            "GPS requires precise location permission. Vehicle features need readable car properties; " +
+                "unavailable or stale readings are omitted. Updates are sent only after iPhone subscription.",
+            14f, MENU_SECONDARY,
+        ))
+    }
 
     private fun buildLocationReportingSection(): View =
         LinearLayout(this).apply {
@@ -3690,7 +3713,10 @@ class CarPlayHostActivity : ComponentActivity() {
         val airPlayConfig = createAirPlayConfig(size)
         val locationProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) {
-                AndroidCarPlayLocationProvider(this)
+                VehicleLocationProvider(
+                    AndroidCarPlayLocationProvider(this), vehicleDataConfig,
+                    android.os.SystemClock::elapsedRealtime,
+                )
             } else {
                 null
             }

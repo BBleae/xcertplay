@@ -1,0 +1,76 @@
+package com.shilapi.xcertplay.vehicle
+
+import com.shilapi.xcertplay.transport.CarPlayLocationFix
+import com.shilapi.xcertplay.transport.Iap2LocationProvider
+import com.shilapi.xcertplay.transport.NmeaLocationEncoder
+
+/** Features with a concrete iAP2 mapping; vendor properties are never protocol field IDs. */
+enum class VehicleDataFeature(val label: String, val description: String, val defaultEnabled: Boolean) {
+    ALTITUDE("GPS altitude", "Altitude in GGA, when available", true),
+    GPS_SPEED("GPS speed", "Ground speed in RMC; independent of wheel speed", true),
+    COURSE("GPS course", "Direction of travel in RMC, when available", true),
+    ACCURACY("GPS accuracy", "Approximate HDOP from Android horizontal accuracy", true),
+    WHEEL_SPEED("Wheel speed & gear", "PASCD dead reckoning; requires a compatible vehicle source", false),
+    EV_STATUS("EV battery & range", "VehicleStatusUpdate; requires a compatible vehicle source", false),
+}
+
+data class VehicleDataConfig(val enabled: Set<VehicleDataFeature> = VehicleDataFeature.entries
+    .filter { it.defaultEnabled }.toSet()) {
+    fun isEnabled(feature: VehicleDataFeature) = feature in enabled
+    fun with(feature: VehicleDataFeature, value: Boolean) = copy(
+        enabled = if (value) enabled + feature else enabled - feature,
+    )
+    fun filter(fix: CarPlayLocationFix) = fix.copy(
+        altitudeMeters = fix.altitudeMeters.takeIf { isEnabled(VehicleDataFeature.ALTITUDE) },
+        speedMetersPerSecond = fix.speedMetersPerSecond.takeIf { isEnabled(VehicleDataFeature.GPS_SPEED) },
+        bearingDegrees = fix.bearingDegrees.takeIf { isEnabled(VehicleDataFeature.COURSE) },
+        accuracyMeters = fix.accuracyMeters.takeIf { isEnabled(VehicleDataFeature.ACCURACY) },
+    )
+}
+
+/** A read-only source. Timestamps use elapsed time, so wall-clock corrections cannot revive data. */
+interface VehicleLocationSource : AutoCloseable {
+    fun start(): Boolean
+    fun stop()
+    fun location(): VehicleLocationSample?
+    override fun close() = stop()
+}
+
+data class VehicleLocationSample(val fix: CarPlayLocationFix, val elapsedRealtimeMillis: Long)
+enum class VehicleDataState { DISABLED, UNAVAILABLE, STALE, NO_PHONE_SUBSCRIPTION, ACTIVE }
+
+/** Reusable source → policy → iAP2 adapter. Never sends a fix before the phone subscribes. */
+class VehicleLocationProvider(
+    private val source: VehicleLocationSource,
+    private val config: VehicleDataConfig,
+    private val elapsedRealtimeMillis: () -> Long,
+    private val maxAgeMillis: Long = 30_000,
+) : Iap2LocationProvider {
+    private var subscribed = false
+    override fun start(): Boolean {
+        if (subscribed) return true
+        subscribed = source.start()
+        return subscribed
+    }
+    override fun stop() {
+        if (subscribed) source.stop()
+        subscribed = false
+    }
+    fun state(): VehicleDataState {
+        if (!subscribed) return VehicleDataState.NO_PHONE_SUBSCRIPTION
+        val sample = source.location() ?: return VehicleDataState.UNAVAILABLE
+        val age = elapsedRealtimeMillis() - sample.elapsedRealtimeMillis
+        return if (age < 0 || age > maxAgeMillis) VehicleDataState.STALE else VehicleDataState.ACTIVE
+    }
+    override fun latestNmea(): String? {
+        if (state() != VehicleDataState.ACTIVE) return null
+        val sample = source.location() ?: return null
+        val age = elapsedRealtimeMillis() - sample.elapsedRealtimeMillis
+        if (age !in 0..maxAgeMillis) return null
+        return NmeaLocationEncoder.encode(config.filter(sample.fix))
+    }
+    override fun close() {
+        stop()
+        source.close()
+    }
+}

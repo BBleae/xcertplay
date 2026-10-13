@@ -10,8 +10,8 @@ import android.os.Bundle
 import android.os.Looper
 import android.util.Log
 import com.shilapi.xcertplay.transport.CarPlayLocationFix
-import com.shilapi.xcertplay.transport.Iap2LocationProvider
-import com.shilapi.xcertplay.transport.NmeaLocationEncoder
+import com.shilapi.xcertplay.vehicle.VehicleLocationSource
+import com.shilapi.xcertplay.vehicle.VehicleLocationSample
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 class AndroidCarPlayLocationProvider(
     context: Context,
     private val preferredLocationAgeMillis: Long = DEFAULT_PREFERRED_LOCATION_AGE_MILLIS,
-) : Iap2LocationProvider {
+) : VehicleLocationSource {
     private val locationManager =
         context.applicationContext.getSystemService(LocationManager::class.java)
     private val stateLock = Any()
@@ -109,32 +109,33 @@ class AndroidCarPlayLocationProvider(
         }
     }
 
-    override fun latestNmea(): String? {
+    override fun location(): VehicleLocationSample? {
         val fix = latestFix() ?: return null
         return try {
-            NmeaLocationEncoder.encode(
+            VehicleLocationSample(
                 CarPlayLocationFix(
                     latitudeDegrees = fix.latitude,
                     longitudeDegrees = fix.longitude,
-                    altitudeMeters = fix.altitude.takeIf { fix.hasAltitude() }?.toDouble(),
+                    altitudeMeters = fix.altitude.takeIf { fix.hasAltitude() },
                     bearingDegrees = fix.bearing.takeIf { fix.hasBearing() }?.toDouble(),
                     speedMetersPerSecond = fix.speed.takeIf { fix.hasSpeed() }?.toDouble(),
                     accuracyMeters = fix.accuracy.takeIf { fix.hasAccuracy() }?.toDouble(),
                     timestampMillis = fix.time,
                 ),
+                elapsedRealtimeMillis = fix.elapsedRealtimeNanos / 1_000_000,
             )
-        } catch (error: Throwable) {
-            Log.w(TAG, "Could not encode Android location as NMEA", error)
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "Invalid Android location", error)
             null
         }
     }
 
     private fun latestFix(): Location? {
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.elapsedRealtime()
         return preferredProviders.asSequence()
             .mapNotNull(latestFixes::get)
-            .filter { now - it.time <= preferredLocationAgeMillis }
-            .maxByOrNull { it.time }
+            .filter { now - it.elapsedRealtimeNanos / 1_000_000 in 0..preferredLocationAgeMillis }
+            .maxByOrNull { it.elapsedRealtimeNanos }
     }
 
     companion object {
