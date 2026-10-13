@@ -17,6 +17,8 @@ captures/
 # Local agent working notes
 agent_docs/
 research/
+.claude/
+work/
 
 tools/
 mobile/release/
