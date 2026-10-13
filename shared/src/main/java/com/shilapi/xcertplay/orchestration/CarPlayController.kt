@@ -150,6 +150,7 @@ class CarPlayController(
     private val savePairRecord: (LockdownPairRecord) -> Unit = {},
     private val clearPairRecord: () -> Unit = {},
     private val locationProvider: Iap2LocationProvider? = null,
+    private val vehicleStatusProvider: com.shilapi.xcertplay.transport.VehicleStatusProvider? = null,
 ) : Closeable {
     init {
         require(!config.locationReportingEnabled || locationProvider != null) {
@@ -464,6 +465,7 @@ class CarPlayController(
                     wirelessIdentification = null
                     wirelessAirPlayEndpoint = null
                     closeBestEffort("location provider") { locationProvider?.close() }
+                    closeBestEffort("vehicle data provider") { vehicleStatusProvider?.close() }
                 } finally {
                     executor.shutdownNow()
                     try {
@@ -991,10 +993,11 @@ class CarPlayController(
                 session = channel,
                 mfi = Iap2MfiAuthenticationClient(mfi),
             ).run(
-                identification = identification,
+                identification = identification.copy(locationInformationEnabled = false, vehicleStatusCapabilities = emptySet()),
                 endpoint = endpoint,
                 bringUpTimeoutMillis = CONTROL_BRING_UP_TIMEOUT_MILLIS,
-                locationProvider = locationProvider,
+                locationProvider = null,
+                vehicleStatusProvider = null,
                 onReady = { activateMediaRemote(channel) },
                 onStopped = { deactivateMediaRemote(channel) },
                 onIncoming = ::onIap2Incoming,
@@ -1079,6 +1082,7 @@ class CarPlayController(
                         endpoint = endpoint,
                         bringUpTimeoutMillis = Iap2WirelessControlClient.NO_TIMEOUT_MILLIS,
                         locationProvider = locationProvider,
+                        vehicleStatusProvider = vehicleStatusProvider,
                         onReady = {
                             activateMediaRemote(channel)
                             onWirelessTunnelReady(generation)
@@ -1442,6 +1446,7 @@ class CarPlayController(
                 availableCurrentMilliAmps = config.availableCurrentMilliAmps,
                 bringUpTimeoutMillis = CONTROL_BRING_UP_TIMEOUT_MILLIS,
                 locationProvider = locationProvider,
+                vehicleStatusProvider = vehicleStatusProvider,
                 onReady = { activateMediaRemote(csm) },
                 onStopped = { deactivateMediaRemote(csm) },
                 onIncoming = ::onIap2Incoming,

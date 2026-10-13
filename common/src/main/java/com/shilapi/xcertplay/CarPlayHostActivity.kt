@@ -3717,6 +3717,14 @@ class CarPlayHostActivity : ComponentActivity() {
         updateDebugOverlays()
         val config = createRuntimeConfig()
         val airPlayConfig = createAirPlayConfig(size)
+        val vehicleProvider = if (vehicleDataConfig.isEnabled(VehicleDataFeature.EV_STATUS)) {
+            com.shilapi.xcertplay.vehicle.CarPropertyVehicleProvider(
+                com.shilapi.xcertplay.vehicle.CarPropertyDataStore(
+                    com.shilapi.xcertplay.vehicle.AndroidCarPropertyBackend(this),
+                    vehicleDataConfig.platform, android.os.SystemClock::elapsedRealtime,
+                ), vehicleDataConfig, android.os.SystemClock::elapsedRealtime,
+            ).also { it.start() }
+        } else null
         val locationProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) {
                 VehicleLocationProvider(
@@ -3778,6 +3786,7 @@ class CarPlayHostActivity : ComponentActivity() {
             savePairRecord = { record -> AirPlayPersistence.saveLockdownRecord(this, record) },
             clearPairRecord = { AirPlayPersistence.clearLockdownRecord(this) },
             locationProvider = locationProvider,
+            vehicleStatusProvider = vehicleProvider,
         )
         controller = next
         CarPlayBackgroundSession.store(

@@ -25,6 +25,7 @@ class Iap2WirelessControlClient(
         endpoint: Iap2WirelessCarPlayEndpoint,
         bringUpTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
         locationProvider: Iap2LocationProvider? = null,
+        vehicleStatusProvider: VehicleStatusProvider? = null,
         onReady: () -> Unit = {},
         onStopped: () -> Unit = {},
         onIncoming: (Iap2Frame) -> Unit = {},
@@ -40,13 +41,16 @@ class Iap2WirelessControlClient(
             "bringUpTimeoutMillis must be in 1..$MAX_TIMEOUT_MILLIS or NO_TIMEOUT_MILLIS"
         }
 
+        val vehicleReporter = Iap2VehicleStatusReporter(vehicleStatusProvider,
+            Iap2VehicleStatus.capabilities(vehicleStatusProvider?.awaitSnapshot(2_000)))
+        val controlIdentification = identification.copy(vehicleStatusCapabilities = vehicleReporter.advertised)
         val bringUpDeadlineNanos = if (bringUpTimeoutMillis == NO_TIMEOUT_MILLIS) {
             Long.MAX_VALUE
         } else {
             deadlineAfter(bringUpTimeoutMillis)
         }
         Iap2IdentificationClient(session).identify(
-            identification,
+            controlIdentification,
             requireRemaining(bringUpDeadlineNanos),
         )
         onProgress("iap2 identification accepted")
@@ -85,6 +89,7 @@ class Iap2WirelessControlClient(
             onReady()
             // The control session is long-lived. Poll timeouts only wake this loop; they do not end it.
             while (true) {
+                vehicleReporter.tick(::sendDuringControl)
                 if (locationActive && sendLatestLocation(locationProvider) && !locationSentLogged) {
                     locationSentLogged = true
                     onProgress("iap2 tx=0xfffb location-information")
@@ -94,7 +99,7 @@ class Iap2WirelessControlClient(
                 } else {
                     CONTROL_POLL_INTERVAL_MILLIS
                 }
-                val incoming = session.recv(pollTimeout)
+                val incoming = session.recv(vehicleReporter.pollTimeout(pollTimeout))
                 if (incoming == null) {
                     if (session.isClosed) {
                         return Iap2WirelessControlResult(
@@ -111,6 +116,7 @@ class Iap2WirelessControlClient(
                     continue
                 }
 
+                if (vehicleReporter.handle(incoming, ::sendDuringControl)) continue
                 when (incoming.messageId) {
                     REQUEST_ACCESSORY_WIFI_CONFIGURATION -> {
                         onProgress("iap2 rx=0x5702 request-wifi-configuration")
@@ -220,6 +226,7 @@ class Iap2WirelessControlClient(
                 }
             }
         } finally {
+            vehicleReporter.stop()
             locationProvider?.stop()
             if (hidStarted && !session.isClosed) {
                 runCatching {
