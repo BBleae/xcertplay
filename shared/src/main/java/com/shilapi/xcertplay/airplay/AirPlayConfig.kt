@@ -8,6 +8,16 @@ data class AirPlayInsets(
     val right: Int = 0,
 )
 
+/**
+ * One selectable view area, anchored at the display origin. The display itself is declared as the
+ * envelope of all its areas, so switching areas never changes the negotiated stream size.
+ */
+data class AirPlayViewArea(
+    val widthPixels: Int,
+    val heightPixels: Int,
+    val safeArea: AirPlayInsets? = null,
+)
+
 /** One display advertised to the phone in /info. */
 data class AirPlayDisplayConfig(
     val widthPixels: Int,
@@ -20,6 +30,9 @@ data class AirPlayDisplayConfig(
     val safeArea: AirPlayInsets? = null,
     val safeAreaDrawOutside: Boolean? = null,
     val initialUrl: String? = null,
+    /** When non-empty, replaces the single [viewArea]/[safeArea] declaration. */
+    val viewAreas: List<AirPlayViewArea> = emptyList(),
+    val initialViewArea: Int = 0,
 )
 
 /** One OEM homescreen icon. */

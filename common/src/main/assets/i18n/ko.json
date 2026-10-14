@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "값을 키우면 네트워크 지터를 흡수하지만 지연이 늘어납니다",
   "settings.audio.channel_mapping": "고급 채널 매핑",
   "settings.audio.channel_mapping.support": "CarPlay 오디오 유형에 따라 Android Automotive 오디오 버스로 라우팅합니다",
+  "settings.audio.focus": "오디오 포커스",
+  "settings.audio.focus.support": "호스트 화면을 열 때 시스템 오디오 포커스를 요청하여 다른 앱을 일시 중지합니다. 끄면 다른 오디오와 함께 재생됩니다",
   "settings.audio.microphone": "마이크",
   "settings.audio.mic_gain": "마이크 게인",
   "settings.audio.mic_gain.support": "0.5x ~ 10x",

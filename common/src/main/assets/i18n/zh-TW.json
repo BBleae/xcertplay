@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "數值越大越能吸收網路抖動，但會增加延遲",
   "settings.audio.channel_mapping": "進階聲道對應",
   "settings.audio.channel_mapping.support": "依 CarPlay 音訊類型路由 Android Automotive 音訊匯流排",
+  "settings.audio.focus": "音訊焦點",
+  "settings.audio.focus.support": "開啟主畫面時申請系統音訊焦點，讓其他 App 暫停播放；關閉後與其他音訊混合播放",
   "settings.audio.microphone": "麥克風",
   "settings.audio.mic_gain": "麥克風增益",
   "settings.audio.mic_gain.support": "0.5x 至 10x",

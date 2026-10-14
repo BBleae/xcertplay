@@ -147,6 +147,8 @@
   "settings.audio.buffer.support": "Larger values absorb network jitter but add delay",
   "settings.audio.channel_mapping": "Advanced channel mapping",
   "settings.audio.channel_mapping.support": "Routes Android Automotive audio buses by CarPlay audio type",
+  "settings.audio.focus": "Audio focus",
+  "settings.audio.focus.support": "Request system audio focus while the host is open so other apps pause; turn off to mix with other audio",
   "settings.audio.microphone": "Microphone",
   "settings.audio.mic_gain": "Microphone gain",
   "settings.audio.mic_gain.support": "0.5x to 10x",

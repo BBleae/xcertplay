@@ -38,6 +38,7 @@ object AirPlayPersistence {
     private const val KEY_HEVC_ENABLED = "hevc_enabled"
     private const val KEY_HEVC_SOFTWARE_DECODER = "hevc_software_decoder"
     private const val KEY_ADVANCED_AUDIO_CHANNEL_MAPPING = "advanced_audio_channel_mapping"
+    private const val KEY_AUDIO_FOCUS_ENABLED = "audio_focus_enabled"
     private const val KEY_MAIN_MEDIA_AUDIO_BUFFER_DURATION_MS = "main_media_audio_buffer_duration_ms"
     private const val KEY_MICROPHONE_GAIN_PERCENT = "microphone_gain_percent"
     private const val KEY_WIRELESS_ENABLED = "wireless_enabled"
@@ -73,6 +74,7 @@ object AirPlayPersistence {
     private const val KEY_LOCAL_MFI_CERTIFICATE_URI = "local_mfi_certificate_uri"
     private const val KEY_LOCAL_MFI_PRIVATE_KEY_URI = "local_mfi_private_key_uri"
     private const val SAFE_AREA_KEY_PREFIX = "safe_area_"
+    private val SAFE_AREA_KEY_PATTERN = Regex("""safe_area_(\d{1,5})x(\d{1,5})""")
     private const val CUSTOM_ICON_FILE = "airplay-icon.png"
 
     const val DEFAULT_MANUFACTURER = "xcertplay"
@@ -151,6 +153,16 @@ object AirPlayPersistence {
     fun saveAdvancedAudioChannelMapping(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_ADVANCED_AUDIO_CHANNEL_MAPPING, enabled)
+            .apply()
+    }
+
+    fun loadAudioFocusEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUDIO_FOCUS_ENABLED, true)
+
+    fun saveAudioFocusEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_AUDIO_FOCUS_ENABLED, enabled)
             .apply()
     }
 
@@ -575,6 +587,14 @@ object AirPlayPersistence {
                 .getString(safeAreaKey(widthPixels, heightPixels), null),
         )
     }
+
+    /** Activity sizes ("width" to "height") that have a stored safe area, in key order. */
+    fun loadSafeAreaSizes(context: Context): List<Pair<Int, Int>> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.entries.mapNotNull { (key, value) ->
+            val match = SAFE_AREA_KEY_PATTERN.matchEntire(key) ?: return@mapNotNull null
+            if (SafeAreaCodec.decode(value as? String) == null) return@mapNotNull null
+            match.groupValues[1].toInt() to match.groupValues[2].toInt()
+        }.filter { (width, height) -> width > 0 && height > 0 }.sortedWith(compareBy({ it.first }, { it.second }))
 
     fun saveSafeAreaRect(
         context: Context,

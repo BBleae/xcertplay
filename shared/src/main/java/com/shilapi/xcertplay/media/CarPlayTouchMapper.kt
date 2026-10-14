@@ -24,11 +24,16 @@ object CarPlayTouchMapper {
     ): List<AirPlayContact> {
         val width = viewWidth.coerceAtLeast(1)
         val height = viewHeight.coerceAtLeast(1)
+        return contacts(event, contentRect(width, height, streamWidth.coerceAtLeast(1), streamHeight.coerceAtLeast(1)))
+    }
+
+    /** Uses the video transform content rectangle to avoid touch offsets from rounding. */
+    fun contacts(event: MotionEvent, rect: DoubleArray): List<AirPlayContact> {
+        require(rect.size == 4 && rect[2] > 0 && rect[3] > 0)
         val action = event.actionMasked
         val liftedIndex = if (action == MotionEvent.ACTION_POINTER_UP) event.actionIndex else -1
         val allUp = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
         val count = minOf(MAX_CONTACTS, event.pointerCount)
-        val rect = contentRect(width, height, streamWidth.coerceAtLeast(1), streamHeight.coerceAtLeast(1))
         if (action == MotionEvent.ACTION_DOWN &&
             (event.x < rect[0] || event.x > rect[0] + rect[2] || event.y < rect[1] || event.y > rect[1] + rect[3])
         ) return emptyList()

@@ -227,6 +227,7 @@ class AndroidMediaSink(
     /** Shared by the visible host and the background media pipeline. */
     class AudioFocusSession internal constructor(private val manager: AudioManager) {
         private val owners = mutableSetOf<Any>()
+        private var enabled = true
         private var requested = false
         private var hasFocus = false
         private val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -246,10 +247,19 @@ class AndroidMediaSink(
             owners.add(owner)
         }
 
+        /** When disabled, focus is never requested so phone audio mixes with other apps. */
+        @Synchronized
+        fun setEnabled(value: Boolean) {
+            if (enabled == value) return
+            enabled = value
+            if (!value && requested) abandon()
+            Log.i(TAG, "audio focus ${if (value) "enabled" else "disabled"}")
+        }
+
         /** Called only when the user enters the host, never by arriving audio packets. */
         @Synchronized
         fun requestFromHost() {
-            if (owners.isEmpty() || hasFocus) return
+            if (!enabled || owners.isEmpty() || hasFocus) return
             val result = manager.requestAudioFocus(request)
             requested = result != AudioManager.AUDIOFOCUS_REQUEST_FAILED
             hasFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
@@ -260,6 +270,10 @@ class AndroidMediaSink(
         fun release(owner: Any) {
             owners.remove(owner)
             if (owners.isNotEmpty()) return
+            abandon()
+        }
+
+        private fun abandon() {
             manager.abandonAudioFocusRequest(request)
             requested = false
             hasFocus = false

@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "القيم الأكبر تمتص تذبذب الشبكة لكنها تزيد التأخير",
   "settings.audio.channel_mapping": "تعيين متقدم للقنوات",
   "settings.audio.channel_mapping.support": "يوجّه نواقل صوت Android Automotive حسب نوع الصوت في CarPlay",
+  "settings.audio.focus": "تركيز الصوت",
+  "settings.audio.focus.support": "يطلب تركيز الصوت من النظام عند فتح المضيف لإيقاف التطبيقات الأخرى مؤقتًا؛ أوقفه لمزج الصوت مع الأصوات الأخرى",
   "settings.audio.microphone": "الميكروفون",
   "settings.audio.mic_gain": "كسب الميكروفون",
   "settings.audio.mic_gain.support": "من 0.5x إلى 10x",

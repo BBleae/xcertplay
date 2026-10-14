@@ -23,6 +23,7 @@ import android.util.Log
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayContact
 import com.shilapi.xcertplay.airplay.AirPlayDeviceInfo
+import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
 import com.shilapi.xcertplay.airplay.AirPlayMediaHandler
 import com.shilapi.xcertplay.airplay.AirPlaySession
@@ -196,6 +197,10 @@ class CarPlayController(
     @Volatile private var mux: Iap2UsbMuxHost? = null
     @Volatile private var csm: Iap2Session? = null
     @Volatile private var activeSession: AirPlaySession? = null
+    /** Survives AirPlay reconnects so a new session is moved to the area the host is showing. */
+    @Volatile var viewAreaIndex: Int = airPlayConfig.main.initialViewArea
+        private set
+    private val viewAreaGeneration = AtomicInteger(0)
     @Volatile private var hotspot: WirelessHotspotManager? = null
     @Volatile private var bonjour: CarPlayBonjour? = null
     @Volatile private var bluetoothSocket: BluetoothSocket? = null
@@ -234,6 +239,17 @@ class CarPlayController(
     private val sessionListener = object : AirPlaySessionListener {
         override fun onSessionActive(session: AirPlaySession) {
             activeSession = session
+            val area = viewAreaIndex
+            val token = viewAreaGeneration.get()
+            if (area != airPlayConfig.main.initialViewArea) {
+                runCatching {
+                    touchExecutor.execute {
+                        if (!closed && activeSession === session && viewAreaGeneration.get() == token) {
+                            session.showViewArea(area)
+                        }
+                    }
+                }
+            }
             debugLog(
                 "AirPlay session active controller=${session.controllerId ?: "unknown"} " +
                     "peer=${session.host}",
@@ -335,6 +351,30 @@ class CarPlayController(
             restartWireless()
         } else {
             startIphone()
+        }
+    }
+
+    /** The main display as declared to the phone, including its view areas. */
+    val mainDisplay: AirPlayDisplayConfig get() = airPlayConfig.main
+
+    /** Switches only after viewAreas negotiation; the token and session identity discard stale tasks. */
+    fun showViewArea(index: Int): Boolean {
+        if (closed || index !in airPlayConfig.main.viewAreas.indices) return false
+        val session = activeSession ?: return false
+        if (!session.acceptsViewAreas()) return false
+        val token = viewAreaGeneration.incrementAndGet()
+        viewAreaIndex = index
+        return try {
+            touchExecutor.execute {
+                if (closed || activeSession !== session || viewAreaGeneration.get() != token) return@execute
+                if (!session.showViewArea(index)) {
+                    debugLog("AirPlay view area $index not accepted by session")
+                    uiListener?.onTransportError("AirPlay view area switch rejected")
+                }
+            }
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 

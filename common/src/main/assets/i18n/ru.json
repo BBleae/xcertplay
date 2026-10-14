@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "Большие значения сглаживают нестабильность сети, но добавляют задержку",
   "settings.audio.channel_mapping": "Расширенная маршрутизация каналов",
   "settings.audio.channel_mapping.support": "Направляет аудиособи Android Automotive по типу аудио CarPlay",
+  "settings.audio.focus": "Аудиофокус",
+  "settings.audio.focus.support": "Запрашивает системный аудиофокус при открытии хоста, чтобы другие приложения ставились на паузу; отключите для смешивания с другим звуком",
   "settings.audio.microphone": "Микрофон",
   "settings.audio.mic_gain": "Усиление микрофона",
   "settings.audio.mic_gain.support": "От 0,5x до 10x",

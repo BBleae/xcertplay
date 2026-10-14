@@ -92,6 +92,7 @@ import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeMm
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
 import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
+import com.shilapi.xcertplay.airplay.AirPlayViewArea
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
 import com.shilapi.xcertplay.airplay.AirPlayIcon
 import com.shilapi.xcertplay.airplay.AirPlaySafeArea
@@ -379,12 +380,22 @@ class CarPlayHostActivity : ComponentActivity() {
     private var currentSurface: Surface? = null
     private var currentSurfaceTexture: SurfaceTexture? = null
     private var activeDisplaySize: DisplaySize? = null
+    private data class DisplayLayout(val splitScreen: Boolean, val portrait: Boolean)
+    private fun currentDisplayLayout() = DisplayLayout(
+        isInMultiWindowMode,
+        resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT,
+    )
+    private var activeDisplayLayout: DisplayLayout? = null
+    private var pendingDisplayLayout: DisplayLayout? = null
     private var pendingDisplaySize: DisplaySize? = null
+    /** View areas declared by the current controller; null for a web display or no controller. */
+    private var viewAreas: CarPlayViewAreas? = null
     private var displayScaleTenths by mutableIntStateOf(CarPlayDisplayScale.DEFAULT_TENTHS)
     private var hevcEnabled by mutableStateOf(true)
     private var hevcSoftwareDecoderEnabled by mutableStateOf(false)
     private var advancedAudioChannelMappingSupported = false
     private var advancedAudioChannelMapping by mutableStateOf(false)
+    private var audioFocusEnabled by mutableStateOf(true)
     private var mainMediaAudioBufferDurationMs by mutableIntStateOf(MainMediaAudioBuffer.DEFAULT_DURATION_MS)
     // Snapshot state is safe to read from the media and log threads.
     private var debugLogsEnabled by mutableStateOf(false)
@@ -446,6 +457,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var startAfterHandshakeReset = false
     private var restartGeneration = 0
     private var reconnectScheduled = false
+    private var reconnectAttempts = 0
     private var screenLogs by mutableStateOf<List<ScreenLogLine>>(emptyList())
     private val sessionLog get() = CarPlayBackgroundSession.log
     private var gestureSequenceActive = false
@@ -589,6 +601,7 @@ class CarPlayHostActivity : ComponentActivity() {
         advancedAudioChannelMapping =
             advancedAudioChannelMappingSupported &&
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
+        audioFocusEnabled = AirPlayPersistence.loadAudioFocusEnabled(this)
         mainMediaAudioBufferDurationMs =
             AirPlayPersistence.loadMainMediaAudioBufferDurationMs(this)
         microphoneGainPercent = AirPlayPersistence.loadMicrophoneGainPercent(this)
@@ -715,6 +728,7 @@ class CarPlayHostActivity : ComponentActivity() {
         super.onResume()
         CarPlayBackgroundSession.audioFocus(this).apply {
             retain(this@CarPlayHostActivity)
+            setEnabled(audioFocusEnabled)
             requestFromHost()
         }
         locationPermissionAvailable = hasFineLocationPermission()
@@ -753,6 +767,11 @@ class CarPlayHostActivity : ComponentActivity() {
             val view = videoView ?: return@post
             scheduleDisplaySize(view.width, view.height)
         }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        refreshDisplaySizeAfterLayout()
     }
 
     override fun onDestroy() {
@@ -1088,6 +1107,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveVehicleDataConfig(this, vehicleDataConfig)
         AirPlayPersistence.saveAutoStartOnBoot(this, autoStartOnBoot)
         AirPlayPersistence.saveAdvancedAudioChannelMapping(this, advancedAudioChannelMapping)
+        AirPlayPersistence.saveAudioFocusEnabled(this, audioFocusEnabled)
         AirPlayPersistence.saveMainMediaAudioBufferDurationMs(
             this,
             mainMediaAudioBufferDurationMs,
@@ -1609,29 +1629,54 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun createAirPlayConfig(size: DisplaySize): AirPlayConfig {
+    private fun createViewAreas(size: DisplaySize): CarPlayViewAreas? {
+        if (mainWebDisplay.enabled) return null
+        return CarPlayViewAreas.build(
+            currentWidth = size.width,
+            currentHeight = size.height,
+            savedSizes = AirPlayPersistence.loadSafeAreaSizes(this),
+            scaleTenths = displayScaleTenths,
+        ) { width, height -> AirPlayPersistence.loadSafeAreaRect(this, width, height) }
+    }
+
+    private fun createAirPlayConfig(size: DisplaySize, areas: CarPlayViewAreas?): AirPlayConfig {
         val physical = resolvePhysicalSize(size)
-        val baseDisplay = AirPlayDisplayConfig(
-            widthPixels = size.width,
-            heightPixels = size.height,
-            widthPhysicalMm = physical.widthMm,
-            heightPhysicalMm = physical.heightMm,
-            fps = fps,
-        )
-        val scaledDisplay = CarPlayDisplayScale.apply(
-            baseDisplay,
-            displayScaleTenths,
-        )
-        val display = mainWebDisplay.override(scaledDisplay.copy(
-            safeArea = AirPlaySafeArea.toInsets(
-                mapping = AirPlayPersistence.loadSafeAreaRect(this, size.width, size.height),
-                activityWidthPixels = size.width,
-                activityHeightPixels = size.height,
-                displayWidthPixels = scaledDisplay.widthPixels,
-                displayHeightPixels = scaledDisplay.heightPixels,
-            ),
-            safeAreaDrawOutside = safeAreaDrawOutside,
-        ))
+        val display = if (areas != null) {
+            // The display is the envelope of all areas; its physical size keeps the current
+            // activity's pixel density.
+            AirPlayDisplayConfig(
+                widthPixels = areas.widthPixels,
+                heightPixels = areas.heightPixels,
+                widthPhysicalMm = Math.round(physical.widthMm * areas.activityWidthPixels.toDouble() / size.width).toInt(),
+                heightPhysicalMm = Math.round(physical.heightMm * areas.activityHeightPixels.toDouble() / size.height).toInt(),
+                fps = fps,
+                safeAreaDrawOutside = safeAreaDrawOutside,
+                viewAreas = areas.areas,
+                initialViewArea = checkNotNull(areas.indexFor(size.width, size.height)),
+            )
+        } else {
+            val baseDisplay = AirPlayDisplayConfig(
+                widthPixels = size.width,
+                heightPixels = size.height,
+                widthPhysicalMm = physical.widthMm,
+                heightPhysicalMm = physical.heightMm,
+                fps = fps,
+            )
+            val scaledDisplay = CarPlayDisplayScale.apply(
+                baseDisplay,
+                displayScaleTenths,
+            )
+            mainWebDisplay.override(scaledDisplay.copy(
+                safeArea = AirPlaySafeArea.toInsets(
+                    mapping = AirPlayPersistence.loadSafeAreaRect(this, size.width, size.height),
+                    activityWidthPixels = size.width,
+                    activityHeightPixels = size.height,
+                    displayWidthPixels = scaledDisplay.widthPixels,
+                    displayHeightPixels = scaledDisplay.heightPixels,
+                ),
+                safeAreaDrawOutside = safeAreaDrawOutside,
+            ))
+        }
         val cluster = clusterWebDisplay.takeIf { it.enabled }?.let {
             it.override(AirPlayDisplayConfig(it.width, it.height, widthPhysicalMm = widthPhysicalMm, fps = fps,
                 primaryInputDevice = 0))
@@ -1855,6 +1900,7 @@ class CarPlayHostActivity : ComponentActivity() {
                         return@runOnUiThread
                     }
                     activeAirPlaySession = session
+                    reconnectAttempts = 0
                     syncAirPlayDarkMode()
                     if (menuOpen) return@runOnUiThread
                     appendLog("AirPlay session active")
@@ -1933,12 +1979,16 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         controller = snapshot.controller
         sink = snapshot.sink
+        viewAreas = snapshot.viewAreas
         handshakeTimeline = snapshot.handshakeTimeline
         activeScreenStreamTypes = snapshot.activeScreenStreamTypes
         timelineRevision++
         snapshot.sink.setMediaMetricsMonitor(mediaMetricsMonitor)
         if (snapshot.width > 0 && snapshot.height > 0) {
-            activeDisplaySize = DisplaySize(snapshot.width, snapshot.height)
+            val restored = snapshot.viewAreas?.activitySize(snapshot.controller.viewAreaIndex)
+            activeDisplaySize = restored?.let { DisplaySize(it.first, it.second) }
+                ?: DisplaySize(snapshot.width, snapshot.height)
+            activeDisplayLayout = currentDisplayLayout()
         }
         val generation = restartGeneration
         snapshot.controller.attachUi(
@@ -1978,7 +2028,8 @@ class CarPlayHostActivity : ComponentActivity() {
         timelineRevision++
         updateDebugOverlays()
         val config = createRuntimeConfig()
-        val airPlayConfig = createAirPlayConfig(size)
+        val areas = createViewAreas(size)
+        val airPlayConfig = createAirPlayConfig(size, areas)
         val vehicleProvider = if (vehicleDataConfig.isEnabled(VehicleDataFeature.EV_STATUS) ||
             vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED) ||
             vehicleDataConfig.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) {
@@ -2009,6 +2060,7 @@ class CarPlayHostActivity : ComponentActivity() {
             "Starting CarPlay controller at ${size.width}x${size.height} -> " +
                 "${airPlayConfig.main.widthPixels}x${airPlayConfig.main.heightPixels} " +
                 "(${CarPlayDisplayScale.label(displayScaleTenths)}) " +
+                "viewAreas=${areas ?: "single"} " +
                 "physical=${airPlayConfig.main.widthPhysicalMm}x" +
                 "${airPlayConfig.main.heightPhysicalMm}mm " +
                 "video=${if (airPlayConfig.hevc) "HEVC" else "H.264"} " +
@@ -2060,9 +2112,11 @@ class CarPlayHostActivity : ComponentActivity() {
             vehicleStatusProvider = vehicleProvider,
         )
         controller = next
+        viewAreas = areas
+        updateWebDisplayPreviews()
         CarPlayBackgroundSession.store(
             next, renderer, size.width, size.height,
-            checkNotNull(handshakeTimeline), activeScreenStreamTypes,
+            checkNotNull(handshakeTimeline), activeScreenStreamTypes, areas,
         )
         next.start()
     }
@@ -2091,18 +2145,39 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun scheduleDisplaySize(width: Int, height: Int) {
         if (width <= 0 || height <= 0 || shuttingDown.get()) return
         val size = DisplaySize(width, height)
-        if (size == activeDisplaySize || size == pendingDisplaySize) return
+        val layout = currentDisplayLayout()
+        if (size == pendingDisplaySize && layout == pendingDisplayLayout) return
+        val active = activeDisplaySize
+        if (size == active && layout == activeDisplayLayout) {
+            // Back to the shown size before the debounce fired: the change was transient.
+            pendingDisplaySize = null
+            mainHandler.removeCallbacks(applyDisplaySize)
+            return
+        }
         pendingDisplaySize = size
+        pendingDisplayLayout = layout
         mainHandler.removeCallbacks(applyDisplaySize)
-        mainHandler.postDelayed(applyDisplaySize, DISPLAY_CHANGE_DEBOUNCE_MILLIS)
+        // A rotation onto a declared area is only a view area switch, so it need not wait.
+        mainHandler.postDelayed(
+            applyDisplaySize,
+            if (viewAreas?.turnsWithScreen == true) 0L else DISPLAY_CHANGE_DEBOUNCE_MILLIS,
+        )
     }
 
     private fun applyDisplaySize(size: DisplaySize) {
-        if (shuttingDown.get() || size == activeDisplaySize) return
+        if (shuttingDown.get()) return
         val previous = activeDisplaySize
+        val layout = currentDisplayLayout()
+        val layoutChanged = activeDisplayLayout != null && layout != activeDisplayLayout
         activeDisplaySize = size
+        activeDisplayLayout = layout
         recordDetectedMaximum(size)
         updateResolutionMenu()
+        if (applyViewArea(size)) return
+        if (size == previous && !layoutChanged) {
+            maybeStartCarPlay()
+            return
+        }
         if (previous == null) {
             appendLog("Display detected: ${size.width}x${size.height}")
             maybeStartCarPlay()
@@ -2111,11 +2186,55 @@ class CarPlayHostActivity : ComponentActivity() {
                 "Display updated while handshake is reset: " +
                     "${previous.width}x${previous.height} -> ${size.width}x${size.height}",
             )
-        } else if (!mainWebDisplay.enabled) {
+        } else if (controller == null) {
+            maybeStartCarPlay()
+        } else if (mainWebDisplay.enabled) {
+            // The web display owns its negotiated size; only the preview follows the window.
+            updateWebDisplayPreviews()
+        } else if (!layoutChanged && canKeepDisplayWindow(size)) {
+            appendLog(
+                "Display changed ${previous.width}x${previous.height} -> ${size.width}x${size.height} " +
+                    "inside declared ${viewAreas?.activityWidthPixels}x${viewAreas?.activityHeightPixels}; " +
+                    "keeping session",
+            )
+            updateWebDisplayPreviews()
+        } else {
             restartCarPlay(
                 "Display changed ${previous.width}x${previous.height} -> ${size.width}x${size.height}",
             )
         }
+    }
+
+    private fun canKeepDisplayWindow(size: DisplaySize): Boolean {
+        val areas = viewAreas ?: return false
+        val active = controller ?: return false
+        if (currentDisplayLayout().splitScreen) return false
+        val window = areas.activitySize(active.viewAreaIndex)
+        // Temporary overlays may shrink the current layout, but cannot expand it using another orientation.
+        return size.width <= window.first && size.height <= window.second &&
+            (size.width > size.height) == (window.first > window.second) &&
+            (areas.indexFor(size.width, size.height) == null || active.viewAreaIndex == areas.indexFor(size.width, size.height))
+    }
+
+    /** Switches to a declared area; failure falls through to the renegotiation decision. */
+    private fun applyViewArea(size: DisplaySize): Boolean {
+        val areas = viewAreas ?: return false
+        val active = controller ?: return false
+        if (active.isClosed() || menuOpen || handshakeResetInProgress || shuttingDown.get()) return false
+        val current = active.viewAreaIndex
+        val (currentWidth, currentHeight) = areas.activitySize(current)
+        val turned = (size.width > size.height) != (currentWidth > currentHeight)
+        if (turned && !areas.turnsWithScreen) return false
+        val layout = currentDisplayLayout()
+        val target = areas.indexFor(size.width, size.height, layout.splitScreen, layout.portrait) ?: return false
+        if (!turned && target == current && !layout.splitScreen) return false
+        if (!active.showViewArea(target)) return false
+        appendLog(
+            "View area $current -> $target for ${size.width}x${size.height} " +
+                "(${areas.areas[target].widthPixels}x${areas.areas[target].heightPixels})",
+        )
+        updateWebDisplayPreviews()
+        return true
     }
 
     private fun recordDetectedMaximum(size: DisplaySize) {
@@ -2128,6 +2247,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun maybeStartCarPlay() {
+        if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
         if (controller == null && adoptBackgroundSession()) return
         val size = activeDisplaySize ?: return
         val transportReady = if (wirelessEnabled) wirelessPermissionsReady else vpnReady
@@ -2154,11 +2274,15 @@ class CarPlayHostActivity : ComponentActivity() {
         val delayMillis = if (reason.contains("AirPlay iAP tunnel", ignoreCase = true)) {
             IAP_TUNNEL_RECONNECT_DELAY_MILLIS
         } else {
-            RECONNECT_DELAY_MILLIS
+            minOf(
+                RECONNECT_DELAY_MILLIS shl reconnectAttempts.coerceAtMost(RECONNECT_MAX_SHIFT),
+                RECONNECT_MAX_DELAY_MILLIS,
+            ).also { reconnectAttempts++ }
         }
         appendLog("$reason; retrying in ${delayMillis}ms")
         mainHandler.postDelayed(
             {
+                if (generation != restartGeneration) return@postDelayed
                 reconnectScheduled = false
                 if (
                     shuttingDown.get() ||
@@ -2187,13 +2311,26 @@ class CarPlayHostActivity : ComponentActivity() {
         val oldSink = sink
         CarPlayBackgroundSession.clear(oldController)
         controller = null
+        viewAreas = null
         sink = null
+        handshakeResetInProgress = true
+        reconnectScheduled = false
+        activeAirPlaySession = null
         teardownExecutor.execute {
-            oldController?.close()
-            oldController?.awaitClosed(CONTROLLER_CLOSE_TIMEOUT_MILLIS)
-            oldSink?.close()
-            runOnUiThread {
-                if (!shuttingDown.get() && generation == restartGeneration) startCarPlay(size)
+            try {
+                oldController?.close()
+                oldController?.awaitClosed(CONTROLLER_CLOSE_TIMEOUT_MILLIS)
+            } finally {
+                try {
+                    oldSink?.close()
+                } finally {
+                    runOnUiThread {
+                        if (!shuttingDown.get() && generation == restartGeneration) {
+                            handshakeResetInProgress = false
+                            maybeStartCarPlay()
+                        }
+                    }
+                }
             }
         }
     }
@@ -2215,6 +2352,7 @@ class CarPlayHostActivity : ComponentActivity() {
         val oldSink = sink
         CarPlayBackgroundSession.clear(oldController)
         controller = null
+        viewAreas = null
         sink = null
         activeScreenStreamTypes.clear()
         setConnectionStage("Reconnecting after settings")
@@ -2308,6 +2446,7 @@ class CarPlayHostActivity : ComponentActivity() {
         val oldSink = sink
         CarPlayBackgroundSession.clear(oldController)
         controller = null
+        viewAreas = null
         sink = null
         Log.i(TAG, "shutdown reason=$reason terminateProcess=$terminateProcess")
         teardownExecutor.execute {
@@ -2342,9 +2481,15 @@ class CarPlayHostActivity : ComponentActivity() {
         val view = videoView
         view?.visibility = if (!mainWebDisplay.enabled || mainWebDisplay.preview) View.VISIBLE else View.INVISIBLE
         val matrix = android.graphics.Matrix()
-        if (view != null && view.width > 0 && view.height > 0 && mainWebDisplay.enabled) {
-            val rect = CarPlayTouchMapper.contentRect(view.width, view.height, mainWebDisplay.width, mainWebDisplay.height)
-            matrix.setScale((rect[2] / view.width).toFloat(), (rect[3] / view.height).toFloat(), view.width / 2f, view.height / 2f)
+        val placement = view?.let { mainAreaPlacement(it.width, it.height) }
+        if (view != null && placement != null) {
+            // The decoder output fills the view by default; scale so only the active area does.
+            val (rect, share) = placement
+            matrix.setScale(
+                (rect[2] / view.width / share[0]).toFloat(),
+                (rect[3] / view.height / share[1]).toFloat(),
+            )
+            matrix.postTranslate(rect[0].toFloat(), rect[1].toFloat())
         }
         view?.setTransform(matrix)
         clusterPreviewWindow?.let { window ->
@@ -2355,6 +2500,34 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         currentSurface?.let { webDisplays?.preview(SCREEN_TYPE_MAIN, it) }
         clusterPreviewSurface?.let { webDisplays?.preview(SCREEN_TYPE_ALT, it) }
+    }
+
+    /**
+     * Where the main stream's active area is drawn in a view of this size, as
+     * [left, top, width, height], plus the area's [width, height] share of the stream. Null when
+     * the stream simply fills the view.
+     */
+    private fun mainAreaPlacement(viewWidth: Int, viewHeight: Int): Pair<DoubleArray, DoubleArray>? {
+        if (viewWidth <= 0 || viewHeight <= 0) return null
+        if (mainWebDisplay.enabled) {
+            return CarPlayTouchMapper.contentRect(viewWidth, viewHeight, mainWebDisplay.width, mainWebDisplay.height) to
+                doubleArrayOf(1.0, 1.0)
+        }
+        val areas = viewAreas ?: return null
+        val index = controller?.viewAreaIndex?.takeIf { it in 0 until areas.size } ?: return null
+        val area = areas.areas[index]
+        val share = doubleArrayOf(
+            area.widthPixels.toDouble() / areas.widthPixels,
+            area.heightPixels.toDouble() / areas.heightPixels,
+        )
+        // The area's own activity size fills the view; any other size (inside the envelope) is
+        // letterboxed so the phone's layout keeps its aspect ratio.
+        val rect = if (areas.activitySize(index) == (viewWidth to viewHeight)) {
+            doubleArrayOf(0.0, 0.0, viewWidth.toDouble(), viewHeight.toDouble())
+        } else {
+            CarPlayTouchMapper.contentRect(viewWidth, viewHeight, area.widthPixels, area.heightPixels)
+        }
+        return rect to share
     }
 
     private fun setClusterPreviewCollapsed(collapsed: Boolean) {
@@ -2442,9 +2615,15 @@ class CarPlayHostActivity : ComponentActivity() {
         }
 
         if (mainWebDisplay.enabled && !mainWebDisplay.preview) return true
-        val contacts = CarPlayTouchMapper.contacts(event, view.width, view.height,
-            if (mainWebDisplay.enabled) mainWebDisplay.width else view.width,
-            if (mainWebDisplay.enabled) mainWebDisplay.height else view.height)
+        val placement = mainAreaPlacement(view.width, view.height)
+        val contacts = if (placement == null) {
+            CarPlayTouchMapper.contacts(event, view.width, view.height)
+        } else {
+            // Touch is normalized to the active area, then to the whole declared display.
+            val (rect, share) = placement
+            CarPlayTouchMapper.contacts(event, rect)
+                .map { it.copy(x = it.x * share[0], y = it.y * share[1]) }
+        }
         val queued = controller?.sendTouch(contacts) ?: false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN,
@@ -3210,6 +3389,14 @@ class CarPlayHostActivity : ComponentActivity() {
                     )
                 }
             }
+            row {
+                SwitchRow(
+                    title = tr("settings.audio.focus"),
+                    support = tr("settings.audio.focus.support"),
+                    checked = audioFocusEnabled,
+                    onCheckedChange = ::onAudioFocusEnabledChanged,
+                )
+            }
         }
 
         SectionHeader(tr("settings.audio.microphone"))
@@ -3741,6 +3928,17 @@ class CarPlayHostActivity : ComponentActivity() {
         updateResolutionMenu()
     }
 
+    private fun onAudioFocusEnabledChanged(checked: Boolean) {
+        if (audioFocusEnabled == checked) return
+        audioFocusEnabled = checked
+        AirPlayPersistence.saveAudioFocusEnabled(this, checked)
+        CarPlayBackgroundSession.audioFocus(this).apply {
+            setEnabled(checked)
+            requestFromHost()
+        }
+        appendLog("Audio focus ${if (checked) "enabled" else "disabled"}")
+    }
+
     private fun onHevcChanged(checked: Boolean) {
         if (hevcEnabled == checked) return
         hevcEnabled = checked
@@ -3831,6 +4029,8 @@ class CarPlayHostActivity : ComponentActivity() {
         const val MAX_SCREEN_LOG_LINES = 100
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
         const val RECONNECT_DELAY_MILLIS = 2_000L
+        const val RECONNECT_MAX_DELAY_MILLIS = 30_000L
+        const val RECONNECT_MAX_SHIFT = 4
         const val IAP_TUNNEL_RECONNECT_DELAY_MILLIS = 15_000L
         const val CONTROLLER_CLOSE_TIMEOUT_MILLIS = 4_000L
         const val AUDIO_CAPTURE_DIRECTORY = "audio-captures"
@@ -3858,6 +4058,90 @@ class CarPlayHostActivity : ComponentActivity() {
     )
 }
 
+/**
+ * Collects the current size, all saved safe area sizes, and their swapped orientations.
+ * Areas share the display origin and fit inside its envelope; updateViewArea switches declared sizes.
+ */
+class CarPlayViewAreas private constructor(
+    private val activitySizes: List<Pair<Int, Int>>,
+    val areas: List<AirPlayViewArea>,
+) {
+    /** Envelope of all areas in negotiated display pixels. */
+    val widthPixels: Int = areas.maxOf { it.widthPixels }
+    val heightPixels: Int = areas.maxOf { it.heightPixels }
+
+    /** Envelope of all areas in activity pixels. */
+    val activityWidthPixels: Int = activitySizes.maxOf { it.first }
+    val activityHeightPixels: Int = activitySizes.maxOf { it.second }
+
+    /** Both orientations are declared, so rotating is an area switch rather than a reconnect. */
+    val turnsWithScreen: Boolean =
+        activitySizes.any { (w, h) -> w > h } && activitySizes.any { (w, h) -> w < h }
+
+    val size: Int get() = areas.size
+
+    fun activitySize(index: Int): Pair<Int, Int> = activitySizes[index]
+
+    var splitScreenRatio: Double? = null
+        private set
+
+    fun indexFor(width: Int, height: Int, splitScreen: Boolean = false, portrait: Boolean = height > width): Int? {
+        if (splitScreen) {
+            val fullWidth = if (portrait) minOf(activityWidthPixels, activityHeightPixels) else activityWidthPixels
+            val fullHeight = if (portrait) activityHeightPixels else minOf(activityWidthPixels, activityHeightPixels)
+            splitScreenRatio = minOf(width.toDouble() / fullWidth, height.toDouble() / fullHeight)
+        }
+        // Match only declared dimensions; unknown split-screen sizes require renegotiation.
+        return activitySizes.indexOf(width to height).takeIf { it >= 0 }
+    }
+
+    /** Whether an activity of this size still fits inside the declared envelope. */
+    fun contains(width: Int, height: Int): Boolean =
+        width <= activityWidthPixels && height <= activityHeightPixels
+
+    override fun toString(): String = activitySizes.mapIndexed { index, (w, h) ->
+        val area = areas[index]
+        "$index:${w}x$h->${area.widthPixels}x${area.heightPixels}"
+    }.joinToString(prefix = "[", postfix = "] envelope=${widthPixels}x$heightPixels")
+
+    companion object {
+        fun build(
+            currentWidth: Int,
+            currentHeight: Int,
+            savedSizes: List<Pair<Int, Int>>,
+            scaleTenths: Int,
+            safeArea: (width: Int, height: Int) -> SafeAreaRect?,
+        ): CarPlayViewAreas {
+            require(currentWidth > 0 && currentHeight > 0) { "Activity dimensions must be positive" }
+            val sizes = linkedSetOf<Pair<Int, Int>>()
+            (listOf(currentWidth to currentHeight) + savedSizes).forEach { (w, h) ->
+                if (w > 0 && h > 0) {
+                    sizes += w to h
+                    sizes += h to w
+                }
+            }
+            val declared = sizes.toList()
+            val areas = declared.map { (w, h) ->
+                val scaled = CarPlayDisplayScale.apply(AirPlayDisplayConfig(w, h), scaleTenths)
+                AirPlayViewArea(
+                    widthPixels = scaled.widthPixels,
+                    heightPixels = scaled.heightPixels,
+                    // A swapped size without its own saved rectangle stays full screen: the
+                    // rotation direction is unknown, so the other orientation's rectangle is not reused.
+                    safeArea = AirPlaySafeArea.toInsets(
+                        mapping = safeArea(w, h),
+                        activityWidthPixels = w,
+                        activityHeightPixels = h,
+                        displayWidthPixels = scaled.widthPixels,
+                        displayHeightPixels = scaled.heightPixels,
+                    ),
+                )
+            }
+            return CarPlayViewAreas(declared, areas)
+        }
+    }
+}
+
 /** Process-local hand-off for keeping the CarPlay session alive while no Activity is visible. */
 private object CarPlayBackgroundSession {
     val log = SessionLog()
@@ -3874,6 +4158,7 @@ private object CarPlayBackgroundSession {
         val height: Int,
         val handshakeTimeline: HandshakeTimeline,
         val activeScreenStreamTypes: MutableSet<Int>,
+        val viewAreas: CarPlayViewAreas?,
     )
 
     private var controller: CarPlayController? = null
@@ -3882,13 +4167,14 @@ private object CarPlayBackgroundSession {
     private var height = 0
     private var handshakeTimeline: HandshakeTimeline? = null
     private var activeScreenStreamTypes = mutableSetOf<Int>()
+    private var viewAreas: CarPlayViewAreas? = null
 
     @Synchronized
     fun snapshot(): Snapshot? {
         val currentController = controller ?: return null
         val currentSink = sink ?: return null
         val timeline = handshakeTimeline ?: return null
-        return Snapshot(currentController, currentSink, width, height, timeline, activeScreenStreamTypes)
+        return Snapshot(currentController, currentSink, width, height, timeline, activeScreenStreamTypes, viewAreas)
     }
 
     @Synchronized
@@ -3899,7 +4185,9 @@ private object CarPlayBackgroundSession {
         height: Int,
         handshakeTimeline: HandshakeTimeline,
         activeScreenStreamTypes: MutableSet<Int>,
+        viewAreas: CarPlayViewAreas?,
     ) {
+        this.viewAreas = viewAreas
         this.controller = controller
         this.sink = sink
         this.width = width
@@ -3917,5 +4205,6 @@ private object CarPlayBackgroundSession {
         height = 0
         handshakeTimeline = null
         activeScreenStreamTypes = mutableSetOf()
+        viewAreas = null
     }
 }

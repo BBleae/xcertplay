@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "値を大きくするとネットワークのジッターを吸収できますが遅延が増えます",
   "settings.audio.channel_mapping": "高度なチャンネル割り当て",
   "settings.audio.channel_mapping.support": "CarPlay のオーディオタイプに応じて Android Automotive のオーディオバスに振り分けます",
+  "settings.audio.focus": "オーディオフォーカス",
+  "settings.audio.focus.support": "ホスト画面を開いたときにシステムのオーディオフォーカスを取得し、他のアプリを一時停止します。オフにすると他の音声とミックスされます",
   "settings.audio.microphone": "マイク",
   "settings.audio.mic_gain": "マイクゲイン",
   "settings.audio.mic_gain.support": "0.5x ～ 10x",

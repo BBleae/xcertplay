@@ -58,6 +58,8 @@ data class CarPlayWebDisplayConfig(
         heightPhysicalMm = display.widthPhysicalMm?.let { maxOf(1, Math.round(it * height.toDouble() / width).toInt()) },
         viewArea = null,
         safeArea = null,
+        viewAreas = emptyList(),
+        initialViewArea = 0,
     )
 }
 

@@ -148,6 +148,8 @@
   "settings.audio.buffer.support": "Les valeurs plus élevées absorbent la gigue réseau mais ajoutent de la latence",
   "settings.audio.channel_mapping": "Mappage avancé des canaux",
   "settings.audio.channel_mapping.support": "Achemine les bus audio Android Automotive selon le type audio CarPlay",
+  "settings.audio.focus": "Focus audio",
+  "settings.audio.focus.support": "Demande le focus audio du système à l’ouverture de l’hôte pour mettre en pause les autres apps ; désactivez pour mixer avec d’autres sons",
   "settings.audio.microphone": "Microphone",
   "settings.audio.mic_gain": "Gain du microphone",
   "settings.audio.mic_gain.support": "0,5x à 10x",

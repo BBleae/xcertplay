@@ -182,11 +182,58 @@ object AirPlayInfoPlist {
             "primaryInputDevice" to display.primaryInputDevice,
         )
 
-        entry["viewAreas"] = listOf(areaDict(display))
-        entry["initialViewArea"] = 0
-        entry["adjacentViewAreas"] = emptyList<Int>()
+        if (display.viewAreas.isEmpty()) {
+            entry["viewAreas"] = listOf(areaDict(display))
+            entry["initialViewArea"] = 0
+            entry["adjacentViewAreas"] = emptyList<Int>()
+        } else {
+            val initial = display.initialViewArea.coerceIn(display.viewAreas.indices)
+            entry["viewAreas"] = display.viewAreas.mapIndexed { index, area -> areaDict(display, index, area) }
+            entry["initialViewArea"] = initial
+            entry["adjacentViewAreas"] = display.viewAreas.indices.filter { it != initial }
+        }
         if (display.initialUrl != null) entry["initialURL"] = display.initialUrl
         return entry
+    }
+
+    /**
+     * Switches a declared main-display view area over the event channel.
+     * Reverse-engineered from an iOS 27 capture against a real Tang vehicle: the iPhone
+     * responds only with both animationDurationMillis and adjacentViewAreas, matching
+     * CarPlaySDK ViewAreaUpdate.
+     */
+    fun viewAreaCommand(index: Int, areaCount: Int): Map<String, Any?> = linkedMapOf(
+        "type" to "updateViewArea",
+        "params" to linkedMapOf(
+            "uuid" to MAIN_UUID,
+            "viewAreaIndex" to index,
+            "animationDurationMillis" to VIEW_AREA_ANIMATION_MILLIS,
+            "adjacentViewAreas" to (0 until areaCount).filter { it != index },
+        ),
+    )
+
+    private const val VIEW_AREA_ANIMATION_MILLIS = 300
+
+    /** Every area shares the display origin; its safe area is relative to that same origin. */
+    private fun areaDict(display: AirPlayDisplayConfig, index: Int, area: AirPlayViewArea): Map<String, Any?> {
+        val safe = area.safeArea ?: AirPlayInsets()
+        return linkedMapOf(
+            "viewAreaIndex" to index,
+            "widthPixels" to area.widthPixels,
+            "heightPixels" to area.heightPixels,
+            "originXPixels" to 0,
+            "originYPixels" to 0,
+            "viewAreaTransitionControl" to 0,
+            "viewAreaStatusBarEdge" to 0,
+            "viewAreaSupportsFocusTransfer" to false,
+            "safeArea" to linkedMapOf(
+                "widthPixels" to (area.widthPixels - safe.left - safe.right),
+                "heightPixels" to (area.heightPixels - safe.top - safe.bottom),
+                "originXPixels" to safe.left,
+                "originYPixels" to safe.top,
+                "drawUIOutsideSafeArea" to (display.safeAreaDrawOutside ?: true),
+            ),
+        )
     }
 
     private fun areaDict(display: AirPlayDisplayConfig): Map<String, Any?> {
@@ -235,6 +282,19 @@ internal object AirPlayDisplayControlFactory {
         private val pending = linkedMapOf<String, Map<String, Any?>>()
         private var pendingResponses = 0
         private var alternateReady = false
+        private var viewAreaIndex = config.main.initialViewArea
+        private val viewAreaCount = config.main.viewAreas.size.coerceAtLeast(1)
+
+        @Synchronized fun acceptsViewAreas(): Boolean = "viewAreas" in enabled.orEmpty()
+
+        /** Queues the switch until the event channel is ready and pending responses finish. */
+        @Synchronized fun showViewArea(index: Int): Boolean {
+            if (index !in 0 until viewAreaCount || "viewAreas" !in enabled.orEmpty()) return false
+            viewAreaIndex = index
+            pending["area:${AirPlayInfoPlist.MAIN_UUID}"] = AirPlayInfoPlist.viewAreaCommand(index, viewAreaCount)
+            flush()
+            return true
+        }
 
         @Synchronized fun negotiate(value: Any?, eventPortAvailable: Boolean): List<String> {
             val requested = strings(value)
@@ -266,7 +326,10 @@ internal object AirPlayDisplayControlFactory {
             val cluster = config.cluster?.let {
                 it.copy(initialUrl = selected[AirPlayInfoPlist.ALT_UUID] ?: it.initialUrl)
             }
-            val main = config.main.copy(initialUrl = selected[AirPlayInfoPlist.MAIN_UUID] ?: config.main.initialUrl)
+            val main = config.main.copy(
+                initialUrl = selected[AirPlayInfoPlist.MAIN_UUID] ?: config.main.initialUrl,
+                initialViewArea = viewAreaIndex,
+            )
             val info = AirPlayInfoPlist.build(config.copy(main = main, cluster = cluster), enabled).toMutableMap()
             if ("uiContext" in enabled.orEmpty()) {
                 info["uiContextLastOnDisplayURLs"] = previous.values.distinct()
@@ -313,10 +376,17 @@ internal object AirPlayDisplayControlFactory {
                     require(uuid == AirPlayInfoPlist.MAIN_UUID || (uuid == AirPlayInfoPlist.ALT_UUID && "altScreen" in features))
                     val view = params["viewArea"]
                     val index = (view as? Number)?.toLong() ?: ((view as? Map<*, *>)?.get("viewAreaIndex") as? Number)?.toLong()
-                    require(index == 0L) { "Unknown view area" }
-                    pending["area:$uuid"] = command("updateViewArea", linkedMapOf(
-                        "uuid" to uuid, "viewAreaIndex" to 0, "adjacentViewAreas" to emptyList<Int>(), "animationDurationMillis" to 0,
-                    ))
+                    // The host owns area selection (it follows the activity size); only the
+                    // currently shown main area is confirmed.
+                    val current = if (uuid == AirPlayInfoPlist.MAIN_UUID) viewAreaIndex else 0
+                    require(index == current.toLong()) { "Unknown view area" }
+                    pending["area:$uuid"] = if (uuid == AirPlayInfoPlist.MAIN_UUID && config.main.viewAreas.isNotEmpty()) {
+                        AirPlayInfoPlist.viewAreaCommand(current, viewAreaCount)
+                    } else {
+                        command("updateViewArea", linkedMapOf(
+                            "uuid" to uuid, "viewAreaIndex" to 0, "adjacentViewAreas" to emptyList<Int>(), "animationDurationMillis" to 0,
+                        ))
+                    }
                 }
             }
         }
