@@ -30,7 +30,7 @@ internal class SessionLogFile(
     }
     private val lock = ReentrantLock()
     private val writerExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue(16),
+        ArrayBlockingQueue(MAX_PENDING_RECORDS),
         { task -> Thread(task, "xcertplay-log-writer").apply { isDaemon = true } },
         { task, executor ->
             check(!executor.isShutdown) { "Log writer is closed" }
@@ -50,6 +50,7 @@ internal class SessionLogFile(
     private var failedRecords = 0L
     private val videoPending = AtomicBoolean(false)
     private val droppedVideoPackets = AtomicLong(0)
+    private val droppedRecords = AtomicLong(0)
 
     /** Clears previous records and starts a new session. */
     fun reset(header: String) {
@@ -123,6 +124,10 @@ internal class SessionLogFile(
         if (dropped > 0) writeLine("LOG VIDEO LOSS droppedPackets=$dropped reason=capture-capacity")
     }
 
+    private fun writeRecordLoss(dropped: Long) {
+        if (dropped > 0) writeLine("LOG LOSS droppedRecords=$dropped reason=writer-backlog")
+    }
+
     private fun hex(bytes: ByteArray): String {
         val digits = "0123456789abcdef"
         val output = CharArray(bytes.size * 2)
@@ -134,10 +139,24 @@ internal class SessionLogFile(
         return String(output)
     }
 
-    private fun enqueue(line: () -> String) {
+    /**
+     * Callers include the UI thread and the network/media threads, so a slow disk must never
+     * stall them: once the writer backlog is full, records are counted and reported as lost.
+     * Producers enqueue under [lock], so the capacity check cannot race another producer.
+     */
+    /** Whether the next record would be dropped as writer backlog. */
+    internal val backlogFull: Boolean get() = writerExecutor.queue.remainingCapacity() == 0
+
+    internal fun enqueue(line: () -> String) {
         lock.withLock {
             if (closed) { onError("Log append rejected after close path=${file.absolutePath}"); return }
-            writerExecutor.execute { writeVideoLoss(); writeLine(line()) }
+            if (writerExecutor.queue.remainingCapacity() == 0) {
+                droppedRecords.incrementAndGet()
+                return
+            }
+            // Captured here so the marker lands exactly where the records went missing.
+            val lost = droppedRecords.getAndSet(0)
+            writerExecutor.execute { writeVideoLoss(); writeRecordLoss(lost); writeLine(line()) }
         }
     }
     private fun writeLine(line: String) {
@@ -264,8 +283,10 @@ internal class SessionLogFile(
         lock.withLock {
             if (closed) return
             closed = true
+            val lost = droppedRecords.getAndSet(0)
             writerExecutor.execute {
                 writeVideoLoss()
+                writeRecordLoss(lost)
                 runCatching { output?.close() }.onFailure { onError("Log close failed: ${it.message}") }
                 output = null
             }
@@ -276,6 +297,7 @@ internal class SessionLogFile(
 
     private companion object {
         const val MAX_BYTES = 30 * 1024 * 1024
+        const val MAX_PENDING_RECORDS = 4096
         const val MAX_PENDING_VIDEO_BYTES = 8 * 1024 * 1024L
         const val RETENTION_MARKER_RESERVE = 512
         const val TRUNCATION_MARKER_RESERVE = 128

@@ -690,6 +690,9 @@ class HandshakeTimeline(
         if (group.state == State.DONE) group.state = State.ACTIVE
         val row = Row(nextRowId++, at, direction, channel, code, name, bytes, meaning, detail)
         group.rows += row
+        // Periodic traffic (location, vehicle status) keeps arriving for the whole session; the
+        // first row anchors the step, the rest is a bounded recent window.
+        if (group.rows.size > MAX_GROUP_ROWS) group.rows.removeAt(1)
         group.lastActivityMillis = at
         group.awaiting = null
         latestRow = row
@@ -902,6 +905,7 @@ class HandshakeTimeline(
         private val SUBSCRIPTION_IDS = setOf(
             0x5000, 0x5002, 0x5200, 0x5203, 0xae00, 0xae02, 0x4157, 0x4159, 0x4154, 0x4156, 0x6800, 0x6802,
         )
+        private const val MAX_GROUP_ROWS = 100
         private val UPDATE_LABELS = mapOf(
             0x5001 to "Now playing", 0xae01 to "Power", 0x4158 to "Communications", 0x4155 to "Call state",
             0x5201 to "Route guidance", 0x5202 to "Maneuver",

@@ -754,8 +754,7 @@ internal fun safeClose(closeable: Closeable?) {
     }
 }
 
-private fun ByteArray.toHex(): String =
-    joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+private fun ByteArray.toHex(): String = toHexString()
 
 private fun asMap(value: Any?): Map<String, Any?>? {
     val map = value as? Map<*, *> ?: return null

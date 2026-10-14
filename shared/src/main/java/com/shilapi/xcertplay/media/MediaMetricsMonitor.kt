@@ -8,6 +8,9 @@ import java.util.concurrent.atomic.AtomicLongArray
  * Lock-free media event accumulator with a UI-side rolling chart history.
  *
  * [Snapshot.fps] is the count of frames released to the video Surface during the previous second.
+ * [Snapshot.streamFps] is the count of main screen frames that arrived from the phone in that
+ * second, so a gap between it and [Snapshot.fps] is local to decoding. It is null until a frame
+ * arrives.
  * [Snapshot.videoLatencyMs] is the one-second average from arrival at
  * [AndroidMediaSink.onVideoFrame] until that frame is released to the Surface.
  * [Snapshot.audioLatencyMs] is the one-second average of locally buffered PCM: total frames
@@ -36,6 +39,7 @@ class MediaMetricsMonitor(
         val videoLatencyMs: Float,
         val maxVideoLatencyMs: Float,
         val fps: Float,
+        val streamFps: Float?,
         val audioLatencyMs: Float,
         val audioOutputLatencyMs: Float?,
         val chartWindowNs: Long,
@@ -52,6 +56,8 @@ class MediaMetricsMonitor(
     private val audioLatenciesUs = AtomicLongArray(this.eventCapacity)
     private val audioOutputLatenciesUs = AtomicLongArray(this.eventCapacity)
     private val maxVideoLatencyUs = AtomicLong()
+    private val streamSequence = AtomicLong()
+    private val streamTimestampsNs = AtomicLongArray(this.eventCapacity)
 
     private val chartLock = Any()
     private val chartTimestampsNs = LongArray(chartSampleCapacity.coerceAtLeast(1))
@@ -81,6 +87,13 @@ class MediaMetricsMonitor(
         videoLatenciesUs.set(index, latencyUs)
         videoTimestampsNs.set(index, renderedNs)
         updateMax(maxVideoLatencyUs, latencyUs)
+    }
+
+    /** Records a main screen frame as it arrives from the phone. */
+    fun recordVideoFrameReceived(receivedNs: Long = System.nanoTime()) {
+        if (!enabledState.get()) return
+        val index = (streamSequence.getAndIncrement() % eventCapacity).toInt()
+        streamTimestampsNs.set(index, receivedNs)
     }
 
     fun recordAudioBuffer(
@@ -117,6 +130,11 @@ class MediaMetricsMonitor(
                 videoLatencyCount++
             }
         }
+        var streamFrames = 0
+        for (index in 0 until eventCapacity) {
+            val timestampNs = streamTimestampsNs.get(index)
+            if (timestampNs > cutoffNs && timestampNs <= nowNs) streamFrames++
+        }
         var audioLatencyTotalUs = 0L
         var audioLatencyCount = 0
         var audioOutputLatencyTotalUs = 0L
@@ -145,6 +163,7 @@ class MediaMetricsMonitor(
             videoLatencyMs = videoLatencyMs,
             maxVideoLatencyMs = maxVideoLatencyUs.get() / MICROSECONDS_PER_MILLISECOND,
             fps = fps,
+            streamFps = if (streamSequence.get() == 0L) null else streamFrames.toFloat(),
             audioLatencyMs = audioLatencyMs,
             audioOutputLatencyMs = if (audioOutputLatencyCount == 0) {
                 null
@@ -186,10 +205,12 @@ class MediaMetricsMonitor(
     private fun clear() {
         videoSequence.set(0L)
         audioSequence.set(0L)
+        streamSequence.set(0L)
         maxVideoLatencyUs.set(0L)
         for (index in 0 until eventCapacity) {
             videoTimestampsNs.set(index, 0L)
             videoLatenciesUs.set(index, 0L)
+            streamTimestampsNs.set(index, 0L)
             audioTimestampsNs.set(index, 0L)
             audioLatenciesUs.set(index, 0L)
             audioOutputLatenciesUs.set(index, OUTPUT_LATENCY_UNAVAILABLE)
@@ -207,6 +228,7 @@ class MediaMetricsMonitor(
         videoLatencyMs = 0f,
         maxVideoLatencyMs = 0f,
         fps = 0f,
+        streamFps = null,
         audioLatencyMs = 0f,
         audioOutputLatencyMs = null,
         chartWindowNs = chartWindowNs,

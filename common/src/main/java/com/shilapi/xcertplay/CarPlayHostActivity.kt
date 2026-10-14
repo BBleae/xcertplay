@@ -24,9 +24,12 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -168,9 +171,10 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 /**
- * Full-screen CarPlay host. It renders decoded video through a [TextureView], forwards touch to
+ * Full-screen CarPlay host. It renders decoded video through a [SurfaceView], forwards touch to
  * the active AirPlay session, and drives the complete wired or wireless bring-up through
  * [CarPlayController].
  *
@@ -350,7 +354,8 @@ class CarPlayHostActivity : ComponentActivity() {
     private var clusterPreviewCollapsed = false
     private val webDisplayDrafts = mutableStateMapOf<Int, WebDisplayDraft>()
     private var webDisplayAddresses by mutableStateOf<Map<Int, String>>(emptyMap())
-    private var videoView: TextureView? = null
+    private var videoView: SurfaceView? = null
+    private var videoArea: FrameLayout? = null
     private var contentRoot: FrameLayout? = null
     private var mainFrame: FrameLayout? = null
     private var gestureOverlay: View? = null
@@ -382,7 +387,6 @@ class CarPlayHostActivity : ComponentActivity() {
     private var sink: AndroidMediaSink? = null
     private var controller: CarPlayController? = null
     private var currentSurface: Surface? = null
-    private var currentSurfaceTexture: SurfaceTexture? = null
     private var activeDisplaySize: DisplaySize? = null
     private data class DisplayLayout(val splitScreen: Boolean, val portrait: Boolean)
     private fun currentDisplayLayout() = DisplayLayout(
@@ -546,8 +550,16 @@ class CarPlayHostActivity : ComponentActivity() {
     private var edgeSettingsGestureEligible = false
     private val shuttingDown = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val teardownExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val airPlayCommandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    // Only exitApplication shuts these down, and Activities are recreated often (language,
+    // back and reopen), so their single worker retires when idle instead of leaking per instance.
+    private val teardownExecutor: ExecutorService = idleRetiringSingleThreadExecutor()
+    private val airPlayCommandExecutor: ExecutorService = idleRetiringSingleThreadExecutor()
+
+    private fun idleRetiringSingleThreadExecutor(): ExecutorService =
+        java.util.concurrent.ThreadPoolExecutor(
+            1, 1, IDLE_WORKER_KEEP_ALIVE_SECONDS, java.util.concurrent.TimeUnit.SECONDS,
+            java.util.concurrent.LinkedBlockingQueue(),
+        ).apply { allowCoreThreadTimeOut(true) }
     private val logLines = ScreenLogBuffer(MAX_SCREEN_LOG_LINES)
     private val pendingScreenLogs = ArrayDeque<PendingLog>()
     private val pendingScreenLogsLock = Any()
@@ -577,46 +589,24 @@ class CarPlayHostActivity : ComponentActivity() {
         applyDisplaySize(size)
     }
 
-    private val textureListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-            val existing = currentSurface
-            val surface = if (
-                existing != null &&
-                currentSurfaceTexture === texture &&
-                existing.isValid
-            ) {
-                existing
-            } else {
-                Surface(texture).also {
-                    existing?.release()
-                    currentSurface = it
-                    currentSurfaceTexture = texture
-                }
-            }
-            appendLog(if (existing === surface) "Texture surface reused" else "Texture surface created")
+    // The holder owns the surface; it is only handed to the decoder, never released here.
+    private val surfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            val surface = holder.surface
+            currentSurface = surface
+            val refreshHz = window.decorView.display?.refreshRate
+            appendLog("Video surface created refreshRate=${refreshHz ?: "unknown"}Hz")
             attachSurface(surface)
             updateWebDisplayPreviews()
-            scheduleDisplaySize(width, height)
         }
 
-        override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
-            updateWebDisplayPreviews()
-            scheduleDisplaySize(width, height)
-        }
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
 
-        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
-            if (currentSurfaceTexture !== texture) return true
-            currentSurface?.let { surface ->
-                detachSurface(SCREEN_TYPE_MAIN, surface)
-                surface.release()
-            }
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            currentSurface?.let { detachSurface(SCREEN_TYPE_MAIN, it) }
             currentSurface = null
-            currentSurfaceTexture = null
-            appendLog("Texture surface destroyed")
-            return true
+            appendLog("Video surface destroyed")
         }
-
-        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -843,9 +833,9 @@ class CarPlayHostActivity : ComponentActivity() {
             styleClusterPreviewControls()
         }
         applyFullscreenMode()
-        videoView?.post {
-            val view = videoView ?: return@post
-            scheduleDisplaySize(view.width, view.height)
+        mainFrame?.post {
+            val frame = mainFrame ?: return@post
+            scheduleDisplaySize(frame.width, frame.height)
         }
     }
 
@@ -865,18 +855,14 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(renderLogLines)
         mainHandler.removeCallbacks(drainScreenLogs)
         mainHandler.removeCallbacks(publishTimeline)
-        currentSurface?.let { surface ->
-            detachSurface(SCREEN_TYPE_MAIN, surface)
-            surface.release()
-        }
+        currentSurface?.let { detachSurface(SCREEN_TYPE_MAIN, it) }
         currentSurface = null
-        currentSurfaceTexture = null
         sessionLog.append("Activity destroyed; background session and log remain active")
         super.onDestroy()
     }
 
     /**
-     * View layers keep the video plumbing (TextureViews, touch forwarding, overlays drawn over
+     * View layers keep the video plumbing (video surfaces, touch forwarding, overlays drawn over
      * video); everything else is one Compose layer on top. The window is edge-to-edge: the video
      * is padded by the system bars and display cutout, Compose content by `safeDrawing`.
      */
@@ -885,19 +871,18 @@ class CarPlayHostActivity : ComponentActivity() {
             setBackgroundColor(NO_VIDEO_BACKGROUND)
         }
         contentRoot = root
-        val video = TextureView(this).apply {
-            isOpaque = false
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-            surfaceTextureListener = textureListener
+        val video = SurfaceView(this).apply {
+            holder.addCallback(surfaceCallback)
+        }
+        // Spans the active area; the video inside spans the whole stream and is clipped to it.
+        val area = FrameLayout(this).apply {
+            addView(video, fullFrameParams())
         }
         val gestureLayer = View(this).apply {
             isClickable = true
             setOnTouchListener { view, event -> onHostTouch(view, event) }
         }
-        val frame = FrameLayout(this).apply { addView(video) }
+        val frame = FrameLayout(this).apply { addView(area, fullFrameParams()) }
         frame.addView(
             gestureLayer,
             FrameLayout.LayoutParams(
@@ -908,6 +893,8 @@ class CarPlayHostActivity : ComponentActivity() {
         frame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 updateMediaMetricsOverlayLayout(right - left, bottom - top)
+                updateWebDisplayPreviews()
+                scheduleDisplaySize(right - left, bottom - top)
             }
         }
         mainFrame = frame
@@ -965,6 +952,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         videoView = video
+        videoArea = area
         gestureOverlay = gestureLayer
         safeAreaEditor = editor
         handshakeTimeline = HandshakeTimeline(wirelessEnabled, System.currentTimeMillis())
@@ -1773,9 +1761,9 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun currentActivitySize(): DisplaySize? {
-        val view = videoView
-        if (view != null && view.width > 0 && view.height > 0) {
-            return DisplaySize(view.width, view.height)
+        val frame = mainFrame
+        if (frame != null && frame.width > 0 && frame.height > 0) {
+            return DisplaySize(frame.width, frame.height)
         }
         return activeDisplaySize
     }
@@ -1870,9 +1858,9 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun refreshDisplaySizeAfterLayout() {
-        videoView?.post {
-            val view = videoView ?: return@post
-            scheduleDisplaySize(view.width, view.height)
+        mainFrame?.post {
+            val frame = mainFrame ?: return@post
+            scheduleDisplaySize(frame.width, frame.height)
         }
     }
 
@@ -2108,6 +2096,11 @@ class CarPlayHostActivity : ComponentActivity() {
         val renderer = try {
             createMediaSink(airPlayConfig, controllerGeneration)
         } catch (error: Exception) {
+            // Nothing owns these providers yet; release the car service binding and worker.
+            vehicleProvider.close()
+            currentVehicleProvider = null
+            currentGpsProvider = null
+            currentWheelProvider = null
             appendLog("Could not create web displays: ${error.message}")
             failHandshake("Could not start web displays", error.message ?: "Check resolution and port 8080")
             setConnectionStage("Could not start web displays; check resolution and port 8080")
@@ -2118,8 +2111,11 @@ class CarPlayHostActivity : ComponentActivity() {
         clusterPreviewSurface?.let { attachDisplaySurface(SCREEN_TYPE_ALT, it) }
         updateWebDisplayPreviews()
         val media = createMediaEngine(renderer)
-        val pairings = AirPlayPersistence.loadPairings(this) { id, key ->
-            AirPlayPersistence.savePairing(this, id, key)
+        // The controller outlives this Activity in CarPlayBackgroundSession, so its callbacks
+        // must hold only the application context.
+        val app = applicationContext
+        val pairings = AirPlayPersistence.loadPairings(app) { id, key ->
+            AirPlayPersistence.savePairing(app, id, key)
         }
         val next = CarPlayController(
             context = this,
@@ -2130,9 +2126,9 @@ class CarPlayHostActivity : ComponentActivity() {
             listener = createSessionListener(controllerGeneration),
             media = media,
             reportStatus = createStatusReporter(controllerGeneration),
-            loadPairRecord = { AirPlayPersistence.loadLockdownRecord(this) },
-            savePairRecord = { record -> AirPlayPersistence.saveLockdownRecord(this, record) },
-            clearPairRecord = { AirPlayPersistence.clearLockdownRecord(this) },
+            loadPairRecord = { AirPlayPersistence.loadLockdownRecord(app) },
+            savePairRecord = { record -> AirPlayPersistence.saveLockdownRecord(app, record) },
+            clearPairRecord = { AirPlayPersistence.clearLockdownRecord(app) },
             locationProvider = locationProvider,
             vehicleStatusProvider = vehicleProvider,
         )
@@ -2509,18 +2505,21 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun updateWebDisplayPreviews() {
         val view = videoView
         view?.visibility = if (!mainWebDisplay.enabled || mainWebDisplay.preview) View.VISIBLE else View.INVISIBLE
-        val matrix = android.graphics.Matrix()
-        val placement = view?.let { mainAreaPlacement(it.width, it.height) }
-        if (view != null && placement != null) {
-            // The decoder output fills the view by default; scale so only the active area does.
-            val (rect, share) = placement
-            matrix.setScale(
-                (rect[2] / view.width / share[0]).toFloat(),
-                (rect[3] / view.height / share[1]).toFloat(),
-            )
-            matrix.postTranslate(rect[0].toFloat(), rect[1].toFloat())
+        val area = videoArea
+        val placement = mainFrame?.let { mainAreaPlacement(it.width, it.height) }
+        if (view != null && area != null) {
+            // The decoder output fills the SurfaceView, so the view spans the whole stream while
+            // its parent spans the active area. The parent clips the hole the view punches in the
+            // opaque window, which hides the rest of the stream.
+            if (placement == null) {
+                placeView(area, 0, 0, MATCH_PARENT, MATCH_PARENT)
+                placeView(view, 0, 0, MATCH_PARENT, MATCH_PARENT)
+            } else {
+                val (rect, share) = placement
+                placeView(area, rect[0].roundToInt(), rect[1].roundToInt(), rect[2].roundToInt(), rect[3].roundToInt())
+                placeView(view, 0, 0, (rect[2] / share[0]).roundToInt(), (rect[3] / share[1]).roundToInt())
+            }
         }
-        view?.setTransform(matrix)
         clusterPreviewWindow?.let { window ->
             val shown = clusterWebDisplay.enabled && clusterWebDisplay.preview
             window.visibility = if (shown && !clusterPreviewCollapsed) View.VISIBLE else View.GONE
@@ -2529,6 +2528,19 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         currentSurface?.let { webDisplays?.preview(SCREEN_TYPE_MAIN, it) }
         clusterPreviewSurface?.let { webDisplays?.preview(SCREEN_TYPE_ALT, it) }
+    }
+
+    private fun fullFrameParams() = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.TOP or Gravity.LEFT)
+
+    /** Moves a child of a FrameLayout, requesting layout only when its placement changes. */
+    private fun placeView(view: View, left: Int, top: Int, width: Int, height: Int) {
+        val params = view.layoutParams as FrameLayout.LayoutParams
+        if (params.leftMargin == left && params.topMargin == top && params.width == width && params.height == height) return
+        params.leftMargin = left
+        params.topMargin = top
+        params.width = width
+        params.height = height
+        view.layoutParams = params
     }
 
     /**
@@ -4109,6 +4121,7 @@ class CarPlayHostActivity : ComponentActivity() {
         const val CLUSTER_WINDOW_MIN_WIDTH_DP = 160
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
         const val LOG_RENDER_INTERVAL_MILLIS = 100L
+        const val IDLE_WORKER_KEEP_ALIVE_SECONDS = 30L
         const val MAX_SCREEN_LOG_LINES = 100
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
         const val RECONNECT_DELAY_MILLIS = 2_000L
@@ -4142,7 +4155,7 @@ class CarPlayHostActivity : ComponentActivity() {
 }
 
 /**
- * Collects the current size, all saved safe area sizes, and their swapped orientations.
+ * Collects the current size and every saved safe area size, or its swap, in the current orientation.
  * Areas share the display origin and fit inside its envelope; updateViewArea switches declared sizes.
  */
 class CarPlayViewAreas private constructor(
@@ -4157,7 +4170,7 @@ class CarPlayViewAreas private constructor(
     val activityWidthPixels: Int = activitySizes.maxOf { it.first }
     val activityHeightPixels: Int = activitySizes.maxOf { it.second }
 
-    /** Both orientations are declared, so rotating is an area switch rather than a reconnect. */
+    /** Both orientations are declared, so rotating is an area switch rather than a reconnect. [build] never does this. */
     val turnsWithScreen: Boolean =
         activitySizes.any { (w, h) -> w > h } && activitySizes.any { (w, h) -> w < h }
 
@@ -4196,11 +4209,15 @@ class CarPlayViewAreas private constructor(
             safeArea: (width: Int, height: Int) -> SafeAreaRect?,
         ): CarPlayViewAreas {
             require(currentWidth > 0 && currentHeight > 0) { "Activity dimensions must be positive" }
+            // Only the current orientation is declared: the envelope of a landscape and a portrait
+            // area is a longest-edge square, and the phone encodes that whole square every frame.
+            // Rotating therefore renegotiates instead of switching areas.
+            val orientation = Integer.signum(currentWidth - currentHeight)
             val sizes = linkedSetOf<Pair<Int, Int>>()
             (listOf(currentWidth to currentHeight) + savedSizes).forEach { (w, h) ->
                 if (w > 0 && h > 0) {
-                    sizes += w to h
-                    sizes += h to w
+                    if (Integer.signum(w - h) == orientation) sizes += w to h
+                    if (Integer.signum(h - w) == orientation) sizes += h to w
                 }
             }
             val declared = sizes.toList()

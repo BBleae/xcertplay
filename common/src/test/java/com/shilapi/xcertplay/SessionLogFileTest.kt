@@ -80,6 +80,35 @@ class SessionLogFileTest {
         } finally { file.delete() }
     }
 
+    @Test fun writerBacklogDropsRecordsInsteadOfBlockingCallers() {
+        val file = Files.createTempFile("xcert-log", ".txt").toFile()
+        try {
+            SessionLogFile(file, maxBytes = 1024 * 1024, headLimitBytes = 1024).use { log ->
+                log.reset("header")
+                val gate = java.util.concurrent.CountDownLatch(1)
+                // The first record holds the writer until every producer call has returned.
+                log.enqueue { gate.await(); "first" }
+                val started = System.nanoTime()
+                repeat(10_000) { log.append("record-$it") }
+                val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+                gate.countDown()
+                assertTrue("producers blocked for ${elapsedMillis}ms", elapsedMillis < 5_000)
+                // Wait for room so the next record is accepted rather than counted as lost.
+                val deadline = System.nanoTime() + 5_000_000_000L
+                while (log.backlogFull && System.nanoTime() < deadline) Thread.sleep(1)
+                log.append("after-backlog")
+            }
+            val retained = file.readText()
+            assertTrue(retained.startsWith("header\nfirst\nrecord-0\n"))
+            // Everything accepted before the backlog filled is kept, then one marker, then new records.
+            val marker = Regex("\nLOG LOSS droppedRecords=(\\d+) reason=writer-backlog\nafter-backlog\n$").find(retained)
+            assertNotNull(retained.takeLast(200), marker)
+            val kept = retained.lines().count { it.startsWith("record-") }
+            assertEquals(10_000, kept + marker!!.groupValues[1].toInt())
+            assertTrue(retained.contains("\nrecord-${kept - 1}\nLOG LOSS"))
+        } finally { file.delete() }
+    }
+
     @Test fun activityReattachmentKeepsOneCaptureAndDoesNotTruncate() {
         val file = Files.createTempFile("xcert-log", ".txt").toFile()
         try {

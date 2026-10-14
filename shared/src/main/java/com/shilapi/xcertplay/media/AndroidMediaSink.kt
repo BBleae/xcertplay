@@ -14,6 +14,7 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import com.shilapi.xcertplay.airplay.AudioCodecKind
@@ -25,7 +26,9 @@ import com.shilapi.xcertplay.airplay.toHexString
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Android rendering backend for the CarPlay media engine. Video frames are
@@ -86,7 +89,7 @@ class AndroidMediaSink(
         }
         // Holding frames for a future Surface would apply backpressure to the forwarded stream.
         synchronized(previewLock) {
-            if (surfaces.remove(type, surface)) videoDecoders.remove(type)?.close()
+            if (surfaces.remove(type, surface)) videoDecoders.remove(type)?.apply { setSurface(null) }?.close()
         }
     }
 
@@ -126,7 +129,9 @@ class AndroidMediaSink(
     }
 
     override fun onVideoFrame(type: Int, naluBytes: ByteArray) {
-        val arrivalUs = System.nanoTime() / 1_000L
+        val arrivalNs = System.nanoTime()
+        val arrivalUs = arrivalNs / 1_000L
+        if (type == STREAM_TYPE_MAIN_SCREEN) mediaMetricsMonitor?.recordVideoFrameReceived(arrivalNs)
         if (!forwarded(type)) {
             videoDecoder(type).submit(naluBytes, arrivalUs)
             return
@@ -219,6 +224,8 @@ class AndroidMediaSink(
     }
 
     companion object {
+        private const val STREAM_TYPE_MAIN_SCREEN = 110
+
         fun createAudioFocus(context: Context): AudioFocusSession = AudioFocusSession(
             context.applicationContext.getSystemService(AudioManager::class.java),
         )
@@ -333,6 +340,7 @@ private class VideoDecoder(
     private var needsKeyFrame = false
     private var lastKeyFrameRequestNs = 0L
     @Volatile private var requestedSurface: Surface? = surface
+    @Volatile private var detached: CountDownLatch? = null
     private var outputSurface: Surface? = surface
     private var heldFrame: VideoJob.Frame? = null
     private var lastConfig: VideoJob.Config? = null
@@ -351,8 +359,22 @@ private class VideoDecoder(
         queue.frame(VideoJob.Frame(nalus, arrivalUs))
     }
 
+    /**
+     * Clearing waits until the worker has let go of the old Surface. A SurfaceView must not be
+     * drawn to once it is destroyed, and it hands out the same Surface object for its next
+     * window, so a detach the worker never saw would also hide the swap.
+     */
     fun setSurface(surface: Surface?) {
-        requestedSurface = surface
+        if (surface != null || Thread.currentThread() === thread || !thread.isAlive) {
+            requestedSurface = surface
+            return
+        }
+        val latch = CountDownLatch(1)
+        detached = latch
+        requestedSurface = null
+        if (!latch.await(SURFACE_DETACH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG, "video decoder did not detach from surface within ${SURFACE_DETACH_TIMEOUT_MS}ms")
+        }
     }
 
     fun setMediaMetricsMonitor(monitor: MediaMetricsMonitor?) {
@@ -366,10 +388,13 @@ private class VideoDecoder(
     }
 
     private fun run() {
+        // Decode/render cadence is what the driver sees; keep it ahead of background work.
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) }
         try {
             while (running) {
                 try {
                     if (outputSurface !== requestedSurface) changeSurface(requestedSurface)
+                    if (outputSurface == null) detached?.countDown()
                     if (needsKeyFrame && outputSurface != null &&
                         System.nanoTime() - lastKeyFrameRequestNs >= KEY_FRAME_REQUEST_INTERVAL_NS
                     ) {
@@ -412,6 +437,7 @@ private class VideoDecoder(
         } finally {
             heldFrame = null
             releaseDecoder()
+            detached?.countDown()
         }
     }
 
@@ -666,6 +692,7 @@ private class VideoDecoder(
         const val MAX_INPUT_SIZE = 8 * 1024 * 1024
         const val INPUT_STALL_NS = 2_000_000_000L
         const val KEY_FRAME_REQUEST_INTERVAL_NS = 2_000_000_000L
+        const val SURFACE_DETACH_TIMEOUT_MS = 1_000L
         val START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
     }
 }
@@ -749,6 +776,7 @@ private class AudioRenderer(
     }
 
     private fun run() {
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
         try {
             when (format.codec) {
                 AudioCodecKind.AAC_LC -> configureCodec(MediaFormat.MIMETYPE_AUDIO_AAC)

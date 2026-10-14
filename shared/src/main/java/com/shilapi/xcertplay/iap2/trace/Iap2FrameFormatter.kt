@@ -25,6 +25,7 @@ object Iap2FrameFormatter {
     private const val MAX_PARAMETERS = 80
     private const val MAX_STRING_CHARS = 240
     private const val MAX_HEX_BYTES = 24
+    private const val HEX_DIGITS = "0123456789abcdef"
 
     fun format(
         direction: Iap2TraceDirection,
@@ -199,10 +200,14 @@ object Iap2FrameFormatter {
 
     private fun hexPreview(payload: ByteArray): String {
         if (payload.isEmpty()) return "<empty>"
-        val shown = payload.take(MAX_HEX_BYTES).joinToString(" ") {
-            "%02x".format(it.toInt() and 0xff)
+        val count = minOf(payload.size, MAX_HEX_BYTES)
+        val shown = StringBuilder(count * 3)
+        for (index in 0 until count) {
+            if (index > 0) shown.append(' ')
+            val value = payload[index].toInt() and 0xff
+            shown.append(HEX_DIGITS[value ushr 4]).append(HEX_DIGITS[value and 0x0f])
         }
-        return if (payload.size <= MAX_HEX_BYTES) shown else "$shown ... (+${payload.size - MAX_HEX_BYTES}B)"
+        return if (payload.size <= MAX_HEX_BYTES) shown.toString() else "$shown ... (+${payload.size - MAX_HEX_BYTES}B)"
     }
 
     private fun u8(value: Byte): Int = value.toInt() and 0xff

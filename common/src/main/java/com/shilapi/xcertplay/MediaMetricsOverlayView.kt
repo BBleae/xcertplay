@@ -98,12 +98,15 @@ class MediaMetricsOverlayView(
         val current = snapshot
         val padding = dp(8f)
         val readoutBaseline = padding - valuePaint.ascent()
+        // Decoded is what the codec released; stream is what arrived from the phone.
+        val streamFps = current.streamFps?.let { String.format(Locale.US, "%.1f", it) } ?: "--"
         canvas.drawText(
             String.format(
                 Locale.US,
-                "Video %.1f ms   FPS %.1f",
+                "Video %.1f ms   FPS %.1f / stream %s",
                 current.videoLatencyMs,
                 current.fps,
+                streamFps,
             ),
             padding,
             readoutBaseline,

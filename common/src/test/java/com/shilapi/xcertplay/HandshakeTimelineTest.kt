@@ -177,6 +177,20 @@ class HandshakeTimelineTest {
     }
 
     @Test
+    fun periodicFramesKeepTheGroupBoundedAndItsAnchorRow() {
+        val timeline = HandshakeTimeline(wireless = false, startedAtMillis = 0)
+        repeat(5_000) {
+            timeline.accept("IAP2 TX [wired] 0xfffb LocationInformation frame=80B body=72 params", 100L + it)
+        }
+
+        val group = timeline.groups.single { group -> group.rows.any { it.code == "0xfffb" } }
+        assertEquals(100, group.rows.size)
+        assertEquals(100L, group.rows.first().atMillis)
+        assertEquals(5_099L, group.rows.last().atMillis)
+        assertEquals(group.rows.last(), timeline.latestRow)
+    }
+
+    @Test
     fun ordinaryWirelessCarPlayDoesNotWaitForAnUltraTunnel() {
         val timeline = HandshakeTimeline(wireless = true, startedAtMillis = 1)
         timeline.accept("STEP mfi/ready: ready", 2)

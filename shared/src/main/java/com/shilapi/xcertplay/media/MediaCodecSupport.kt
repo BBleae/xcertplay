@@ -68,19 +68,62 @@ object MediaCodecSupport {
         allowAnnexB: Boolean = true,
     ): ByteArray {
         if (allowAnnexB && startCodeSize(lengthPrefixed, 0) != 0) return lengthPrefixed
-        if (lengthSize !in listOf(1, 2, 4)) return ByteArray(0)
+        val outputSize = annexBSize(lengthPrefixed, lengthSize)
+        if (outputSize < 0) return ByteArray(0)
+        // Runs once per video frame: size first, then copy, so no intermediate buffers grow.
+        val output = ByteArray(outputSize)
         var cursor = 0
-        val output = ByteArrayOutputStream()
+        var position = 0
         while (cursor < lengthPrefixed.size) {
-            if (lengthSize > lengthPrefixed.size - cursor) return ByteArray(0)
-            var length = 0L
-            repeat(lengthSize) { length = (length shl 8) or (lengthPrefixed[cursor++].toLong() and 255) }
-            if (length <= 0 || length > lengthPrefixed.size - cursor) return ByteArray(0)
-            output.write(START_CODE)
-            output.write(lengthPrefixed, cursor, length.toInt())
-            cursor += length.toInt()
+            val length = readLength(lengthPrefixed, cursor, lengthSize)
+            cursor += lengthSize
+            START_CODE.copyInto(output, position)
+            position += START_CODE.size
+            lengthPrefixed.copyInto(output, position, cursor, cursor + length)
+            position += length
+            cursor += length
         }
-        return output.toByteArray()
+        return output
+    }
+
+    /**
+     * Converts four-byte length prefixes to start codes in place, the common case for every
+     * screen frame. Returns false, leaving [buffer] untouched, when it is not well formed.
+     */
+    fun toAnnexBInPlace(buffer: ByteArray): Boolean {
+        if (annexBSize(buffer, 4) != buffer.size) return false
+        var cursor = 0
+        while (cursor < buffer.size) {
+            val length = readLength(buffer, cursor, 4)
+            START_CODE.copyInto(buffer, cursor)
+            cursor += 4 + length
+        }
+        return true
+    }
+
+    /** Annex B size of a length-prefixed access unit, or -1 when it is malformed. */
+    private fun annexBSize(lengthPrefixed: ByteArray, lengthSize: Int): Int {
+        if (lengthSize != 1 && lengthSize != 2 && lengthSize != 4) return -1
+        var cursor = 0
+        var size = 0L
+        while (cursor < lengthPrefixed.size) {
+            if (lengthSize > lengthPrefixed.size - cursor) return -1
+            val length = readLength(lengthPrefixed, cursor, lengthSize)
+            cursor += lengthSize
+            if (length <= 0 || length > lengthPrefixed.size - cursor) return -1
+            size += START_CODE.size + length
+            cursor += length
+        }
+        return if (size > Int.MAX_VALUE) -1 else size.toInt()
+    }
+
+    /** Reads a big-endian length; four-byte values above Int.MAX_VALUE come back negative. */
+    private fun readLength(source: ByteArray, offset: Int, lengthSize: Int): Int {
+        var length = 0L
+        for (index in offset until offset + lengthSize) {
+            length = (length shl 8) or (source[index].toLong() and 255)
+        }
+        return if (length > Int.MAX_VALUE) -1 else length.toInt()
     }
 
     /**

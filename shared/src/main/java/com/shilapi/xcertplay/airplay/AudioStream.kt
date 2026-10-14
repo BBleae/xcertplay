@@ -173,9 +173,6 @@ class AudioStream(
             ((source[offset + 2].toInt() and 0xff) shl 8) or
             (source[offset + 3].toInt() and 0xff)
 
-    private fun ByteArray.toHexString(): String =
-        joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-
     private companion object {
         const val TAG = "xcertplay-usb"
         const val DATAGRAM_BYTES = 4_096

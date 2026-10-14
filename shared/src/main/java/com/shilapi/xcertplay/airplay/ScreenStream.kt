@@ -67,6 +67,8 @@ class ScreenStream(private val key: ByteArray) : Closeable {
     }
 
     private fun run(sock: Socket) {
+        // Receive and decrypt feed the decoder directly; a late frame is a visible stutter.
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
         var failure: Throwable? = null
         try {
             val input = sock.getInputStream()
@@ -143,7 +145,7 @@ class ScreenStream(private val key: ByteArray) : Closeable {
 }
 
 private fun ByteArray.hexPrefix(length: Int): String =
-    take(length).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    copyOf(minOf(size, length)).toHexString()
 
 /** Extracts the avcC/hvcC codec-data record from a VideoConfig payload. */
 object ScreenCodec {
@@ -153,6 +155,7 @@ object ScreenCodec {
 
     /** The wire format is length-prefixed, even when its first length happens to be one. */
     fun lengthPrefixedToAnnexB(payload: ByteArray, lengthSize: Int = 4): ByteArray {
+        if (lengthSize == 4) return if (MediaCodecSupport.toAnnexBInPlace(payload)) payload else ByteArray(0)
         val converted = MediaCodecSupport.toAnnexB(payload, lengthSize, allowAnnexB = false)
         if (converted.size == payload.size) {
             converted.copyInto(payload)
