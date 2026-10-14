@@ -23,6 +23,7 @@ data class VehicleWiperStatus(val washerOn: Boolean? = null,
 interface VehicleStatusProvider : AutoCloseable {
     fun snapshot(): VehicleStatusSnapshot?
     fun awaitSnapshot(timeoutMillis: Long): VehicleStatusSnapshot? = snapshot()
+    fun onSubscriptionChanged(active: Boolean) = Unit
     override fun close() = Unit
 }
 
@@ -89,6 +90,7 @@ class Iap2VehicleStatusReporter(
                 } catch (_: IllegalArgumentException) { stop(); return true }
                   catch (_: com.shilapi.xcertplay.iap2.wire.Iap2ProtocolException) { stop(); return true }
                 active = provider != null && advertised.isNotEmpty()
+                if (active) provider?.onSubscriptionChanged(true)
                 nextSend = 0
                 tick(send)
             }
@@ -105,5 +107,5 @@ class Iap2VehicleStatusReporter(
         Iap2VehicleStatus.update(sample, advertised, requested)?.let(send)
     }
     fun pollTimeout(timeoutMillis: Long): Long = if (active) minOf(timeoutMillis, 30_000) else timeoutMillis
-    fun stop() { active = false; requested = emptySet(); nextSend = 0 }
+    fun stop() { if (active) provider?.onSubscriptionChanged(false); active = false; requested = emptySet(); nextSend = 0 }
 }

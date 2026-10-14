@@ -18,11 +18,20 @@ class CarPropertyVehicleProvider(
     @Volatile private var closed = false
     @Volatile private var started = false
     @Volatile private var speedRequested = false
+    @Volatile private var statusPreflightUntilNanos = 0L
+    @Volatile var subscriptionActive = false
+        private set
+    val platform: VehiclePlatform get() = store.platform
+    override fun onSubscriptionChanged(active: Boolean) {
+        subscriptionActive = active
+        if (!active) statusPreflightUntilNanos = 0
+    }
     @Synchronized fun start(): Boolean {
         if (closed) return false
         if (started) return true
         if (!store.connect()) return false
         started = true
+        statusPreflightUntilNanos = System.nanoTime() + 2_000_000_000
         val ids = buildList {
             if (config.platform == VehiclePlatform.STANDARD_ANDROID && config.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) {
                 add(VehicleTelemetrySnapshot.STANDARD_OUTSIDE_TEMPERATURE)
@@ -31,7 +40,7 @@ class CarPropertyVehicleProvider(
         var ticks = 0
         worker.scheduleWithFixedDelay({
             if (!closed) {
-                if (ticks++ % 5 == 0) store.refresh(ids)
+                if (ticks++ % 5 == 0 && (subscriptionActive || System.nanoTime() < statusPreflightUntilNanos)) store.refresh(ids)
                 if (speedRequested) store.refresh(listOf(VehicleTelemetrySnapshot.STANDARD_SPEED,
                     VehicleTelemetrySnapshot.STANDARD_GEAR))
                 synchronized(sampleReady) { sampleReady.notifyAll() }
@@ -42,6 +51,7 @@ class CarPropertyVehicleProvider(
     override fun awaitSnapshot(timeoutMillis: Long): VehicleStatusSnapshot? {
         if (!started || closed || !config.isEnabled(VehicleDataFeature.EV_STATUS) && !config.isEnabled(VehicleDataFeature.OUTSIDE_TEMPERATURE)) return snapshot()
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000
+        statusPreflightUntilNanos = deadline
         synchronized(sampleReady) {
             while (!closed && snapshot() == null) {
                 val remaining = (deadline - System.nanoTime()) / 1_000_000
@@ -49,6 +59,7 @@ class CarPropertyVehicleProvider(
                 sampleReady.wait(remaining)
             }
         }
+        statusPreflightUntilNanos = 0
         return snapshot()
     }
     override fun requestSpeed(enabled: Boolean) {
@@ -64,6 +75,7 @@ class CarPropertyVehicleProvider(
     }
     override fun awaitSpeed(timeoutMillis: Long): com.shilapi.xcertplay.transport.VehicleSpeedReading? {
         if (!started || closed || !config.isEnabled(VehicleDataFeature.WHEEL_SPEED)) return null
+        val previousRequest = speedRequested
         requestSpeed(true) // bounded preflight acquisition, never a phone-send authorization
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000
         synchronized(sampleReady) {
@@ -73,7 +85,7 @@ class CarPropertyVehicleProvider(
                 sampleReady.wait(remaining)
             }
         }
-        requestSpeed(false)
+        requestSpeed(previousRequest)
         return latestSpeed()
     }
     fun telemetry() = store.snapshot()
@@ -89,6 +101,8 @@ class CarPropertyVehicleProvider(
     @Synchronized override fun close() {
         if (closed) return
         closed = true
+        subscriptionActive = false
+        statusPreflightUntilNanos = 0
         synchronized(sampleReady) { sampleReady.notifyAll() }
         worker.shutdownNow()
         store.close()
