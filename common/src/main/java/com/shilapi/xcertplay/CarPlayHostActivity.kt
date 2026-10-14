@@ -213,6 +213,7 @@ class CarPlayHostActivity : ComponentActivity() {
         ),
         transport = if (wirelessEnabled) CarPlayTransport.WIRELESS else CarPlayTransport.WIRED,
         wirelessHotspotMode = wirelessHotspotMode,
+        wifiHighPerformanceEnabled = wifiHighPerformanceEnabled,
         manualHotspotSsid = manualHotspotSsid,
         manualHotspotPassphrase = manualHotspotPassphrase,
         manualHotspotBand = manualHotspotBand,
@@ -428,6 +429,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var microphonePermissionResolved = false
     private var microphoneGainPercent by mutableIntStateOf(MicrophoneGain.DEFAULT_PERCENT)
     private var wirelessEnabled by mutableStateOf(false)
+    private var wifiHighPerformanceEnabled by mutableStateOf(true)
     private var mfiTarget by mutableStateOf(MfiTarget.USB_CH341)
     private var mfiI2cPath by mutableStateOf(AirPlayPersistence.DEFAULT_MFI_I2C_PATH)
     private var remoteMfiServer by mutableStateOf("")
@@ -630,6 +632,7 @@ class CarPlayHostActivity : ComponentActivity() {
         locationReportingEnabled = AirPlayPersistence.loadLocationReportingEnabled(this)
         locationPermissionAvailable = hasFineLocationPermission()
         wirelessEnabled = AirPlayPersistence.loadWirelessEnabled(this)
+        wifiHighPerformanceEnabled = AirPlayPersistence.loadWifiHighPerformanceEnabled(this)
         mfiTarget = AirPlayPersistence.loadMfiTarget(this)
         mfiI2cPath = AirPlayPersistence.loadMfiI2cPath(this)
         remoteMfiServer = AirPlayPersistence.loadRemoteMfiServer(this)
@@ -1091,6 +1094,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveWebDisplay(this, SCREEN_TYPE_MAIN, mainWebDisplay)
         AirPlayPersistence.saveWebDisplay(this, SCREEN_TYPE_ALT, clusterWebDisplay)
         AirPlayPersistence.saveWirelessEnabled(this, wirelessEnabled)
+        AirPlayPersistence.saveWifiHighPerformanceEnabled(this, wifiHighPerformanceEnabled)
         AirPlayPersistence.saveMfiTarget(this, mfiTarget)
         AirPlayPersistence.saveMfiI2cPath(this, mfiI2cPath)
         AirPlayPersistence.saveRemoteMfiServer(this, remoteMfiServer)
@@ -3124,6 +3128,14 @@ class CarPlayHostActivity : ComponentActivity() {
                     support = tr("settings.wireless.support"),
                     checked = wirelessEnabled,
                     onCheckedChange = ::onWirelessChanged,
+                )
+            }
+            row {
+                SwitchRow(
+                    title = tr("settings.wifi_high_performance"),
+                    support = tr("settings.wifi_high_performance.support"),
+                    checked = wifiHighPerformanceEnabled,
+                    onCheckedChange = { wifiHighPerformanceEnabled = it },
                 )
             }
             row {

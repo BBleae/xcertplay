@@ -95,6 +95,8 @@
   "settings.mfi.error_title": "MFi settings are incomplete",
   "settings.wireless": "Wireless CarPlay",
   "settings.wireless.support": "Connect over Bluetooth and Wi-Fi instead of USB",
+  "settings.wifi_high_performance": "Wi-Fi high performance",
+  "settings.wifi_high_performance.support": "Keep Wi-Fi responsive during wireless CarPlay, including in the background. Requests low latency on Android 10+. May increase power use.",
   "settings.wifi_session": "Wi-Fi session",
   "settings.wifi_session.p2p": "Wi-Fi P2P (5 GHz)",
   "settings.wifi_session.local_only": "LocalOnlyHotspot",

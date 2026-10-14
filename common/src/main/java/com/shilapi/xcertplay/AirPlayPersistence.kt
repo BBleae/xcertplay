@@ -42,6 +42,7 @@ object AirPlayPersistence {
     private const val KEY_MAIN_MEDIA_AUDIO_BUFFER_DURATION_MS = "main_media_audio_buffer_duration_ms"
     private const val KEY_MICROPHONE_GAIN_PERCENT = "microphone_gain_percent"
     private const val KEY_WIRELESS_ENABLED = "wireless_enabled"
+    private const val KEY_WIFI_HIGH_PERFORMANCE_ENABLED = "wifi_high_performance_enabled"
     private const val KEY_WIRELESS_HOTSPOT_MODE = "wireless_hotspot_mode"
     private const val KEY_MANUAL_HOTSPOT_SSID = "manual_hotspot_ssid"
     private const val KEY_MANUAL_HOTSPOT_PASSPHRASE = "manual_hotspot_passphrase"
@@ -202,6 +203,16 @@ object AirPlayPersistence {
     fun saveWirelessEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_WIRELESS_ENABLED, enabled)
+            .apply()
+    }
+
+    fun loadWifiHighPerformanceEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_WIFI_HIGH_PERFORMANCE_ENABLED, true)
+
+    fun saveWifiHighPerformanceEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_WIFI_HIGH_PERFORMANCE_ENABLED, enabled)
             .apply()
     }
 

@@ -96,6 +96,8 @@
   "settings.mfi.error_title": "MFi 设置不完整",
   "settings.wireless": "无线 CarPlay",
   "settings.wireless.support": "通过蓝牙和 Wi-Fi 连接，而非 USB",
+  "settings.wifi_high_performance": "Wi-Fi 高性能模式",
+  "settings.wifi_high_performance.support": "无线 CarPlay 期间保持 Wi-Fi 响应，包括后台运行；Android 10 及以上同时请求低延迟。可能增加耗电。",
   "settings.wifi_session": "Wi-Fi 会话",
   "settings.wifi_session.p2p": "Wi-Fi P2P（5 GHz）",
   "settings.wifi_session.local_only": "LocalOnlyHotspot",

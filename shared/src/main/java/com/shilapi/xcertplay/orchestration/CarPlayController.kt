@@ -48,6 +48,7 @@ import com.shilapi.xcertplay.network.ManualHotspotManager
 import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
 import com.shilapi.xcertplay.network.WirelessHotspotManager
+import com.shilapi.xcertplay.network.WirelessPerformanceLock
 import com.shilapi.xcertplay.network.mfiCertificateWifiP2pCredentials
 import com.shilapi.xcertplay.transport.BlockingDuplexByteStream
 import com.shilapi.xcertplay.transport.BluetoothRfcommDuplexStream
@@ -181,6 +182,8 @@ class CarPlayController(
     private val hostId = UUID.randomUUID().toString().uppercase(Locale.US)
     private val systemBuid = UUID.randomUUID().toString().uppercase(Locale.US)
     private val lifecycleLock = Any()
+    private val performanceLockLifecycle = Any()
+    private val wirelessPerformanceLock = WirelessPerformanceLock(appContext) { debugLog(it) }
     @Volatile private var uiListener: AirPlaySessionListener? = listener
     @Volatile private var uiStatusReporter: ((CarPlayStatus) -> Unit)? = reportStatus
     private val permissionGrant = AtomicBoolean(false)
@@ -238,7 +241,13 @@ class CarPlayController(
 
     private val sessionListener = object : AirPlaySessionListener {
         override fun onSessionActive(session: AirPlaySession) {
-            activeSession = session
+            synchronized(performanceLockLifecycle) {
+                if (closed) return
+                activeSession = session
+                if (config.transport == CarPlayTransport.WIRELESS && config.wifiHighPerformanceEnabled) {
+                    wirelessPerformanceLock.acquire()
+                }
+            }
             val area = viewAreaIndex
             val token = viewAreaGeneration.get()
             if (area != airPlayConfig.main.initialViewArea) {
@@ -258,7 +267,12 @@ class CarPlayController(
         }
 
         override fun onSessionEnded(session: AirPlaySession) {
-            if (activeSession === session) activeSession = null
+            synchronized(performanceLockLifecycle) {
+                if (activeSession === session) {
+                    activeSession = null
+                    wirelessPerformanceLock.close()
+                }
+            }
             debugLog("AirPlay session ended peer=${session.host}")
             uiListener?.onSessionEnded(session)
         }
@@ -474,6 +488,9 @@ class CarPlayController(
         synchronized(this) {
             if (closed) return
             closed = true
+        }
+        synchronized(performanceLockLifecycle) {
+            wirelessPerformanceLock.close()
         }
         closeReceivers()
         stopFileTransferReceivers()

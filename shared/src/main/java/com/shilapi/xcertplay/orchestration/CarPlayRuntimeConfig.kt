@@ -64,6 +64,7 @@ class CarPlayRuntimeConfig(
     val manualHotspotChannel: Int = 0,
     val manualHotspotSecurity: ManualHotspotSecurity = ManualHotspotSecurity.WPA2,
     val locationReportingEnabled: Boolean = false,
+    val wifiHighPerformanceEnabled: Boolean = true,
 ) {
     init {
         require(iphoneDevices.all { it.vendorId == APPLE_VENDOR_ID }) {
