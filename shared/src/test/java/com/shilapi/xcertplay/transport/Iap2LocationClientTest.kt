@@ -22,6 +22,19 @@ class Iap2LocationClientTest {
     }
 
     @Test
+    fun nmeaTimeCarriesHundredthsSoSubSecondFixesDiffer() {
+        val encoded = NmeaLocationEncoder.encode(
+            CarPlayLocationFix(
+                latitudeDegrees = 1.0,
+                longitudeDegrees = 1.0,
+                timestampMillis = Instant.parse("2026-03-23T12:35:19.257Z").toEpochMilli(),
+            ),
+        )
+        assertTrue(encoded.startsWith("\$GPGGA,123519.25,"))
+        assertTrue(encoded.contains("\$GPRMC,123519.25,A,"))
+    }
+
+    @Test
     fun nmeaEncoderBuildsGgaAndRmcPairWithValidChecksums() {
         val encoded = NmeaLocationEncoder.encode(
             CarPlayLocationFix(

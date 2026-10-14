@@ -132,6 +132,8 @@
   "settings.vehicle.location": "الموقع",
   "settings.vehicle.report_location": "إرسال الموقع إلى iPhone",
   "settings.vehicle.report_location.support": "يرسل موقع Android الدقيق كبيانات GPS في CarPlay عندما يطلب iPhone ذلك",
+  "settings.vehicle.precise_positioning": "معلومات تحديد الموقع الدقيقة",
+  "settings.vehicle.precise_positioning.support": "يرسل أيضًا جودة التثبيت الفعلية وعدد الأقمار الصناعية المستخدمة والارتفاع عن سطح البحر؛ وتبقى القيم التي لا يوفرها Android كما كانت",
   "settings.vehicle.properties": "خصائص المركبة",
   "settings.vehicle.source": "مصدر الخصائص",
   "settings.vehicle.source.aaos": "Android Automotive القياسي",

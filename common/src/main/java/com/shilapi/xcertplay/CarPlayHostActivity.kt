@@ -2059,7 +2059,9 @@ class CarPlayHostActivity : ComponentActivity() {
         val positionProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) {
                 VehicleLocationProvider(
-                    AndroidCarPlayLocationProvider(this), vehicleDataConfig,
+                    AndroidCarPlayLocationProvider(
+                        this, precise = vehicleDataConfig.isEnabled(VehicleDataFeature.PRECISE_POSITIONING),
+                    ), vehicleDataConfig,
                     android.os.SystemClock::elapsedRealtime,
                 ).also { currentGpsProvider = it }
             } else {
@@ -3336,6 +3338,15 @@ class CarPlayHostActivity : ComponentActivity() {
                     onCheckedChange = ::onLocationReportingChanged,
                 )
             }
+            row {
+                SwitchRow(
+                    title = tr("settings.vehicle.precise_positioning"),
+                    support = tr("settings.vehicle.precise_positioning.support"),
+                    checked = vehicleDataConfig.isEnabled(VehicleDataFeature.PRECISE_POSITIONING),
+                    onCheckedChange = { onVehicleFeatureChanged(VehicleDataFeature.PRECISE_POSITIONING, it) },
+                    enabled = locationReportingEnabled,
+                )
+            }
         }
 
         SectionHeader(tr("settings.vehicle.properties"))
@@ -3387,7 +3398,8 @@ class CarPlayHostActivity : ComponentActivity() {
             } }
             row { HelpText(vehicleProfileMessage) }
             }
-            VehicleDataFeature.entries.forEach { feature ->
+            // Precise positioning is a location option and sits under the location switch instead.
+            VehicleDataFeature.entries.filter { it != VehicleDataFeature.PRECISE_POSITIONING }.forEach { feature ->
                 row {
                     if (!vehicleEntry.canProvide(feature)) {
                         ListRow(

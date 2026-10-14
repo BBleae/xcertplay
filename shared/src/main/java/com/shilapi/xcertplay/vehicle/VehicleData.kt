@@ -14,6 +14,7 @@ enum class VehicleDataFeature(val label: String, val description: String, val de
     GPS_SPEED("GPS speed", "Ground speed in RMC; independent of wheel speed", true),
     COURSE("GPS course", "Direction of travel in RMC, when available", true),
     ACCURACY("GPS accuracy", "Approximate HDOP from Android horizontal accuracy", true),
+    PRECISE_POSITIONING("Precise positioning information", "Real GGA fix quality, satellites used and sea-level altitude; any value Android cannot give falls back on its own", false),
     WHEEL_SPEED("Wheel speed & gear", "PASCD dead reckoning; needs a source with wheel speed and gear", false, true),
     EV_STATUS("EV battery & range", "VehicleStatusUpdate; needs a source with battery or range", false, true),
     OUTSIDE_TEMPERATURE("Outside temperature", "VehicleStatusUpdate; needs a source with outside temperature", false, true),
@@ -35,6 +36,11 @@ data class VehicleDataConfig(val platform: VehiclePlatform = VehiclePlatform.STA
         speedMetersPerSecond = fix.speedMetersPerSecond.takeIf { isEnabled(VehicleDataFeature.GPS_SPEED) },
         bearingDegrees = fix.bearingDegrees.takeIf { isEnabled(VehicleDataFeature.COURSE) },
         accuracyMeters = fix.accuracyMeters.takeIf { isEnabled(VehicleDataFeature.ACCURACY) },
+        fixQuality = fix.fixQuality.takeIf { isEnabled(VehicleDataFeature.PRECISE_POSITIONING) },
+        satellitesUsed = fix.satellitesUsed.takeIf { isEnabled(VehicleDataFeature.PRECISE_POSITIONING) },
+        geoidSeparationMeters = fix.geoidSeparationMeters.takeIf {
+            isEnabled(VehicleDataFeature.ALTITUDE) && isEnabled(VehicleDataFeature.PRECISE_POSITIONING)
+        },
     )
 }
 

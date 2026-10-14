@@ -132,6 +132,8 @@
   "settings.vehicle.location": "위치",
   "settings.vehicle.report_location": "iPhone에 위치 보고",
   "settings.vehicle.report_location.support": "iPhone이 요청할 때 Android의 정밀 위치를 CarPlay GPS 데이터로 전송합니다",
+  "settings.vehicle.precise_positioning": "정밀 측위 정보",
+  "settings.vehicle.precise_positioning.support": "실제 측위 품질, 사용 위성 수, 해발 고도도 전송합니다. Android가 제공할 수 없는 값은 기존대로 유지됩니다",
   "settings.vehicle.properties": "차량 프로퍼티",
   "settings.vehicle.source": "프로퍼티 소스",
   "settings.vehicle.source.aaos": "표준 Android Automotive",

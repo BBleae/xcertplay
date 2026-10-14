@@ -132,6 +132,8 @@
   "settings.vehicle.location": "位置",
   "settings.vehicle.report_location": "向 iPhone 回報位置",
   "settings.vehicle.report_location.support": "iPhone 提出要求時，將 Android 的精確位置作為 CarPlay GPS 資料送出",
+  "settings.vehicle.precise_positioning": "精確定位資訊",
+  "settings.vehicle.precise_positioning.support": "同時傳送真實的定位品質、使用衛星數與海拔高度；Android 無法提供的值維持原樣",
   "settings.vehicle.properties": "車輛屬性",
   "settings.vehicle.source": "屬性來源",
   "settings.vehicle.source.aaos": "標準 Android Automotive",

@@ -92,7 +92,10 @@ class Iap2WiredControlClient(
                     onProgress("iap2 tx=0xfffb location-information")
                 }
                 val pollTimeout = if (locationActive) {
-                    LOCATION_POLL_INTERVAL_MILLIS
+                    // Wake when the next sentence is due instead of a fixed second, so the phone's
+                    // interval is met without the drift of an early wake followed by a full wait.
+                    (locationSubscription.millisUntilDue() ?: LOCATION_POLL_INTERVAL_MILLIS)
+                        .coerceIn(LOCATION_MIN_POLL_MILLIS, LOCATION_POLL_INTERVAL_MILLIS)
                 } else {
                     CONTROL_POLL_INTERVAL_MILLIS
                 }
@@ -201,6 +204,7 @@ class Iap2WiredControlClient(
         private const val CARPLAY_AVAILABILITY = 0x4300
         private const val CARPLAY_START_SESSION = 0x4301
         private const val LOCATION_POLL_INTERVAL_MILLIS = 1_000L
+        private const val LOCATION_MIN_POLL_MILLIS = 50L
         private const val CONTROL_POLL_INTERVAL_MILLIS = 60_000L
         private const val CONTROL_SEND_TIMEOUT_MILLIS = 5_000L
         private const val HID_STOP_TIMEOUT_MILLIS = 1_000L

@@ -132,6 +132,8 @@
   "settings.vehicle.location": "Ubicación",
   "settings.vehicle.report_location": "Enviar ubicación al iPhone",
   "settings.vehicle.report_location.support": "Envía la ubicación precisa de Android como datos GPS de CarPlay cuando el iPhone la pide",
+  "settings.vehicle.precise_positioning": "Información de posicionamiento precisa",
+  "settings.vehicle.precise_positioning.support": "También envía la calidad real del fix, los satélites usados y la altitud sobre el nivel del mar; cualquier valor que Android no pueda dar se deja como antes",
   "settings.vehicle.properties": "Propiedades del vehículo",
   "settings.vehicle.source": "Fuente de propiedades",
   "settings.vehicle.source.aaos": "Android Automotive estándar",
