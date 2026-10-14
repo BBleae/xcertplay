@@ -5,14 +5,10 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.SurfaceTexture
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,10 +17,6 @@ import android.os.Looper
 import android.os.Process
 import android.provider.OpenableColumns
 import android.provider.Settings
-import android.text.Editable
-import android.text.InputType
-import android.text.TextUtils
-import android.text.TextWatcher
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -32,23 +24,65 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
-import android.widget.EditText
+import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
-import android.widget.ProgressBar
-import android.widget.ScrollView
-import android.widget.SeekBar
-import android.widget.Switch
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface as M3Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -66,6 +100,39 @@ import com.shilapi.xcertplay.airplay.AirPlaySessionListener
 import com.shilapi.xcertplay.airplay.CarPlayMediaEngine
 import com.shilapi.xcertplay.airplay.SafeAreaRect
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.ui.components.Banner
+import com.shilapi.xcertplay.ui.components.BannerKind
+import com.shilapi.xcertplay.ui.components.FieldRow
+import com.shilapi.xcertplay.ui.components.HelpText
+import com.shilapi.xcertplay.ui.components.KeyValueList
+import com.shilapi.xcertplay.ui.components.LargeTopBar
+import com.shilapi.xcertplay.ui.components.LinearMeter
+import com.shilapi.xcertplay.ui.components.ListRow
+import com.shilapi.xcertplay.ui.components.LvIcon
+import com.shilapi.xcertplay.ui.components.LvIconButton
+import com.shilapi.xcertplay.ui.components.PillKind
+import com.shilapi.xcertplay.ui.components.ProvideGroupColor
+import com.shilapi.xcertplay.ui.components.SectionHeader
+import com.shilapi.xcertplay.ui.components.SegmentedRow
+import com.shilapi.xcertplay.ui.components.SelectRow
+import com.shilapi.xcertplay.ui.components.SettingsGroup
+import com.shilapi.xcertplay.ui.components.SliderRow
+import com.shilapi.xcertplay.ui.components.SmallTopBar
+import com.shilapi.xcertplay.ui.components.StatusPill
+import com.shilapi.xcertplay.ui.components.SwitchRow
+import com.shilapi.xcertplay.ui.components.TrailingValue
+import com.shilapi.xcertplay.ui.components.tabular
+import com.shilapi.xcertplay.ui.home.HomeScreen
+import com.shilapi.xcertplay.ui.home.StreamingLogOverlay
+import com.shilapi.xcertplay.ui.i18n.I18n
+import com.shilapi.xcertplay.ui.i18n.tr
+import com.shilapi.xcertplay.ui.i18n.trOr
+import com.shilapi.xcertplay.ui.theme.LavenderCode
+import com.shilapi.xcertplay.ui.theme.LavenderDark
+import com.shilapi.xcertplay.ui.theme.LavenderLight
+import com.shilapi.xcertplay.ui.theme.Radius
+import com.shilapi.xcertplay.ui.theme.Space
+import com.shilapi.xcertplay.ui.theme.XcertplayTheme
 import com.shilapi.xcertplay.vehicle.VehicleDataConfig
 import com.shilapi.xcertplay.vehicle.VehicleDataFeature
 import com.shilapi.xcertplay.vehicle.VehicleLocationProvider
@@ -211,7 +278,6 @@ class CarPlayHostActivity : ComponentActivity() {
                         false,
                     )
                 }
-                locationReportingSwitch?.isChecked = false
                 val approximateOnly =
                     grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
                 appendLog(
@@ -251,8 +317,7 @@ class CarPlayHostActivity : ComponentActivity() {
             externalActivityInProgress = false
             if (uri != null && retainDocumentReadPermission(uri, "certificate")) {
                 localMfiCertificateUri = uri.toString()
-                updateLocalMfiDocumentViews()
-                mfiErrorView?.visibility = View.GONE
+                mfiError = null
             }
         }
     private val localMfiPrivateKeyPicker =
@@ -260,62 +325,52 @@ class CarPlayHostActivity : ComponentActivity() {
             externalActivityInProgress = false
             if (uri != null && retainDocumentReadPermission(uri, "private key")) {
                 localMfiPrivateKeyUri = uri.toString()
-                updateLocalMfiDocumentViews()
-                mfiErrorView?.visibility = View.GONE
+                mfiError = null
             }
         }
 
-    private var mainWebDisplay = CarPlayWebDisplayConfig()
-    private var clusterWebDisplay = CarPlayWebDisplayConfig(width = 1920)
+    // Settings and UI state is snapshot state, so the Compose UI follows every change.
+    private var mainWebDisplay by mutableStateOf(CarPlayWebDisplayConfig())
+    private var clusterWebDisplay by mutableStateOf(CarPlayWebDisplayConfig(width = 1920))
     private val webDisplays get() = CarPlayWebDisplayFactory.find(sink)
     private var clusterPreview: TextureView? = null
     private var clusterPreviewSurface: Surface? = null
-    private val webDisplayInputs = mutableMapOf<Int, Pair<EditText, EditText>>()
-    private val webDisplayRefresh = mutableListOf<() -> Unit>()
-    private val webDisplayAddressViews = mutableMapOf<Int, TextView>()
+    private var clusterPreviewWindow: FrameLayout? = null
+    private var clusterPreviewHandle: android.widget.ImageView? = null
+    private var clusterPreviewMinimize: android.widget.ImageView? = null
+    private var clusterWindowX = 0f
+    private var clusterWindowY = 0f
+    private var clusterWindowScale = 1f
+    private var clusterPreviewContainer: FrameLayout? = null
+    private var clusterPreviewCollapsed = false
+    private val webDisplayDrafts = mutableStateMapOf<Int, WebDisplayDraft>()
+    private var webDisplayAddresses by mutableStateOf<Map<Int, String>>(emptyMap())
     private var videoView: TextureView? = null
     private var contentRoot: FrameLayout? = null
+    private var mainFrame: FrameLayout? = null
     private var gestureOverlay: View? = null
-    private var disconnectedSettingsButton: View? = null
-    private var settingsMenu: View? = null
-    private var mfiTargetGroup: RadioGroup? = null
-    private var mfiI2cFields: View? = null
-    private var mfiRemoteFields: View? = null
-    private var mfiLocalFields: View? = null
-    private var mfiErrorView: TextView? = null
-    private var mfiI2cPathInput: EditText? = null
-    private var remoteMfiServerInput: EditText? = null
-    private var remoteMfiTokenInput: EditText? = null
-    private var localMfiCertificateDocumentView: TextView? = null
-    private var localMfiPrivateKeyDocumentView: TextView? = null
+    private var mfiError by mutableStateOf<String?>(null)
     private var settingsBaseline: SettingsBaseline? = null
-    private var locationReportingSwitch: Switch? = null
-    private var mainMediaAudioBufferSeekBar: SeekBar? = null
-    private var mainMediaAudioBufferValueView: TextView? = null
-    private var microphoneGainSeekBar: SeekBar? = null
-    private var microphoneGainValueView: TextView? = null
-    private var microphoneTestButton: Button? = null
-    private var microphoneLevelBar: ProgressBar? = null
-    private var microphoneLevelValueView: TextView? = null
     private var microphoneLevelMonitor: MicrophoneLevelMonitor? = null
     private var microphoneGainTestAfterPermission = false
-    private var statusView: TextView? = null
-    private var statusScrollView: ScrollView? = null
-    private var handshakePanel: HandshakePanelView? = null
-    private var handshakeTimeline: HandshakeTimeline? = null
+    private var micTestRunning by mutableStateOf(false)
+    private var micPeakPercent by mutableIntStateOf(0)
+    private var micLevelText by mutableStateOf("0%")
+    private var connectionStatus by mutableStateOf("Preparing CarPlay")
+    private var handshakeTimeline by mutableStateOf<HandshakeTimeline?>(null)
+    private var timelineRevision by mutableIntStateOf(0)
+    private var timelineRenderScheduled = false
     private var lastAttemptFailure: String? = null
-    private var resolutionValueView: TextView? = null
-    private var resolutionPreviewView: TextView? = null
-    private var hotspotStatusView: TextView? = null
-    private var manualHotspotFields: View? = null
-    private var manualHotspotErrorView: TextView? = null
-    private var iconPreviewView: ImageView? = null
-    private var iconStatusView: TextView? = null
-    private var safeAreaSummaryView: TextView? = null
+    private var configSummary by mutableStateOf<List<Pair<String, String>>>(emptyList())
+    private var manualHotspotError by mutableStateOf<String?>(null)
+    private var manualHotspotChannelText by mutableStateOf("0")
+    private var airPlayIcon by mutableStateOf<ImageBitmap?>(null)
+    private var airPlayIconCustom by mutableStateOf(false)
+    private var safeAreaSummaryText by mutableStateOf("")
     private var safeAreaEditor: View? = null
     private var safeAreaEditorView: SafeAreaEditorView? = null
     private var safeAreaEditSize: DisplaySize? = null
-    private var safeAreaEditorActive = false
+    private var safeAreaEditorActive by mutableStateOf(false)
     private var mediaMetricsOverlay: MediaMetricsOverlayView? = null
     private var mediaMetricsMonitor: MediaMetricsMonitor? = null
     private var externalActivityInProgress = false
@@ -325,69 +380,73 @@ class CarPlayHostActivity : ComponentActivity() {
     private var currentSurfaceTexture: SurfaceTexture? = null
     private var activeDisplaySize: DisplaySize? = null
     private var pendingDisplaySize: DisplaySize? = null
-    private var displayScaleTenths = CarPlayDisplayScale.DEFAULT_TENTHS
-    private var hevcEnabled = true
-    private var hevcSoftwareDecoderEnabled = false
+    private var displayScaleTenths by mutableIntStateOf(CarPlayDisplayScale.DEFAULT_TENTHS)
+    private var hevcEnabled by mutableStateOf(true)
+    private var hevcSoftwareDecoderEnabled by mutableStateOf(false)
     private var advancedAudioChannelMappingSupported = false
-    private var advancedAudioChannelMapping = false
-    private var mainMediaAudioBufferDurationMs = MainMediaAudioBuffer.DEFAULT_DURATION_MS
-    @Volatile private var debugLogsEnabled = false
-    private var videoFrameLogsEnabled = false
-    private var videoFrameLogSwitch: Switch? = null
-    private var mediaMetricsEnabled = false
-    private var audioPacketCaptureEnabled = false
-    private var moreGesturesToSettings = false
-    private var autoStartOnBoot = false
-    private var manufacturer = AirPlayPersistence.DEFAULT_MANUFACTURER
-    private var model = AirPlayPersistence.DEFAULT_MODEL
-    private var oemLabel = AirPlayPersistence.DEFAULT_OEM_LABEL
-    private var fps = AirPlayDisplaySettings.DEFAULT_FPS
-    private var widthPhysicalMm = AirPlayDisplaySettings.DEFAULT_WIDTH_PHYSICAL_MM
-    private var physicalSizeBasis = AirPlayDisplaySettings.DEFAULT_PHYSICAL_SIZE_BASIS
+    private var advancedAudioChannelMapping by mutableStateOf(false)
+    private var mainMediaAudioBufferDurationMs by mutableIntStateOf(MainMediaAudioBuffer.DEFAULT_DURATION_MS)
+    // Snapshot state is safe to read from the media and log threads.
+    private var debugLogsEnabled by mutableStateOf(false)
+    private var videoFrameLogsEnabled by mutableStateOf(false)
+    private var mediaMetricsEnabled by mutableStateOf(false)
+    private var audioPacketCaptureEnabled by mutableStateOf(false)
+    private var moreGesturesToSettings by mutableStateOf(false)
+    private var autoStartOnBoot by mutableStateOf(false)
+    private var manufacturer by mutableStateOf(AirPlayPersistence.DEFAULT_MANUFACTURER)
+    private var model by mutableStateOf(AirPlayPersistence.DEFAULT_MODEL)
+    private var oemLabel by mutableStateOf(AirPlayPersistence.DEFAULT_OEM_LABEL)
+    private var fps by mutableIntStateOf(AirPlayDisplaySettings.DEFAULT_FPS)
+    private var widthPhysicalMm by mutableIntStateOf(AirPlayDisplaySettings.DEFAULT_WIDTH_PHYSICAL_MM)
+    private var physicalSizeBasis by mutableStateOf(AirPlayDisplaySettings.DEFAULT_PHYSICAL_SIZE_BASIS)
     private var maximumDetectedWidthPixels = 0
     private var maximumDetectedHeightPixels = 0
-    private var rightHandDrive = false
-    private var hideTopBar = true
-    private var hideBottomBar = true
-    private var safeAreaDrawOutside = true
+    private var rightHandDrive by mutableStateOf(false)
+    private var hideTopBar by mutableStateOf(true)
+    private var hideBottomBar by mutableStateOf(true)
+    private var safeAreaDrawOutside by mutableStateOf(true)
     private var currentVehicleProvider: com.shilapi.xcertplay.vehicle.CarPropertyVehicleProvider? = null
     private var currentGpsProvider: VehicleLocationProvider? = null
     private var currentWheelProvider: com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider? = null
-    private var vehicleDataStatusView: TextView? = null
+    private var vehicleDataStatusText by mutableStateOf("")
     private var lastVehicleDataDiagnostics: String? = null
-    private var vehicleDataConfig = VehicleDataConfig()
-    private var locationReportingEnabled = false
+    private var vehicleDataConfig by mutableStateOf(VehicleDataConfig())
+    private var locationReportingEnabled by mutableStateOf(false)
     private var locationPermissionAvailable = false
     private var microphoneAvailable = false
     private var microphonePermissionResolved = false
-    @Volatile private var microphoneGainPercent = MicrophoneGain.DEFAULT_PERCENT
-    private var wirelessEnabled = false
-    private var mfiTarget = MfiTarget.USB_CH341
-    private var mfiI2cPath = AirPlayPersistence.DEFAULT_MFI_I2C_PATH
-    private var remoteMfiServer = ""
-    private var remoteMfiToken = ""
-    private var localMfiCertificateUri = ""
-    private var localMfiPrivateKeyUri = ""
+    private var microphoneGainPercent by mutableIntStateOf(MicrophoneGain.DEFAULT_PERCENT)
+    private var wirelessEnabled by mutableStateOf(false)
+    private var mfiTarget by mutableStateOf(MfiTarget.USB_CH341)
+    private var mfiI2cPath by mutableStateOf(AirPlayPersistence.DEFAULT_MFI_I2C_PATH)
+    private var remoteMfiServer by mutableStateOf("")
+    private var remoteMfiToken by mutableStateOf("")
+    private var localMfiCertificateUri by mutableStateOf("")
+    private var localMfiPrivateKeyUri by mutableStateOf("")
     private var wirelessPermissionsReady = false
-    private var wirelessHotspotMode = WirelessHotspotMode.WIFI_P2P
-    private var manualHotspotSsid = ""
-    private var manualHotspotPassphrase = ""
-    private var manualHotspotBand = ManualHotspotBand.AUTO
+    private var wirelessHotspotMode by mutableStateOf(WirelessHotspotMode.WIFI_P2P)
+    private var manualHotspotSsid by mutableStateOf("")
+    private var manualHotspotPassphrase by mutableStateOf("")
+    private var manualHotspotBand by mutableStateOf(ManualHotspotBand.AUTO)
     private var manualHotspotChannel = 0
-    private var manualHotspotSecurity = ManualHotspotSecurity.OPEN
+    private var manualHotspotSecurity by mutableStateOf(ManualHotspotSecurity.OPEN)
     private var awaitingVpnConsent = false
     private var awaitingWirelessPermissions = false
     private var awaitingLocationPermission = false
     private var vpnReady = false
-    private var hotspotStatus = HotspotStatus(state = "off")
-    private var menuOpen = false
+    private var hotspotStatus by mutableStateOf(HotspotStatus(state = "off"))
+    private var menuOpen by mutableStateOf(false)
+    private var settingsCategory by mutableStateOf<SettingsCategory?>(null)
+    private var settingsTwoPane = false
     private var darkMode = false
     private var activeAirPlaySession: AirPlaySession? = null
     private var activeScreenStreamTypes = mutableSetOf<Int>()
-    private var handshakeResetInProgress = false
+    private var mainStreamActive by mutableStateOf(false)
+    private var handshakeResetInProgress by mutableStateOf(false)
     private var startAfterHandshakeReset = false
     private var restartGeneration = 0
     private var reconnectScheduled = false
+    private var screenLogs by mutableStateOf<List<ScreenLogLine>>(emptyList())
     private val sessionLog get() = CarPlayBackgroundSession.log
     private var gestureSequenceActive = false
     private var gestureTracking = false
@@ -473,7 +532,9 @@ class CarPlayHostActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         initializeSessionLog()
+        I18n.init(this)
         darkMode = isDarkMode(resources.configuration.uiMode)
+        prepareEdgeToEdgeWindow()
         advancedAudioChannelMappingSupported =
             resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)
         airPlayIdentity = AirPlayPersistence.loadIdentity(this)
@@ -486,7 +547,11 @@ class CarPlayHostActivity : ComponentActivity() {
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     if (menuOpen) {
-                        if (safeAreaEditorActive) closeSafeAreaEditor() else cancelSettingsEdits()
+                        when {
+                            safeAreaEditorActive -> closeSafeAreaEditor()
+                            settingsCategory != null && !settingsTwoPane -> settingsCategory = null
+                            else -> cancelSettingsEdits()
+                        }
                     } else {
                         isEnabled = false
                         onBackPressedDispatcher.onBackPressed()
@@ -565,6 +630,7 @@ class CarPlayHostActivity : ComponentActivity() {
         manualHotspotChannel = AirPlayPersistence.loadManualHotspotChannel(this)
         manualHotspotSecurity = AirPlayPersistence.loadManualHotspotSecurity(this)
         wirelessPermissionsReady = !wirelessEnabled || hasRequiredWirelessPermissions()
+        manualHotspotChannelText = manualHotspotChannel.toString()
     }
 
     private fun requestStartupPrerequisites() {
@@ -673,13 +739,16 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Only reached for language changes if `locale` is ever added to configChanges;
+        // otherwise the system recreates the activity and onCreate reloads the strings.
+        I18n.refresh(this)
         val nextDarkMode = isDarkMode(newConfig.uiMode)
         if (nextDarkMode != darkMode) {
             darkMode = nextDarkMode
             syncAirPlayDarkMode()
+            styleClusterPreviewControls()
         }
         applyFullscreenMode()
-        scrollLogsToBottom()
         videoView?.post {
             val view = videoView ?: return@post
             scheduleDisplaySize(view.width, view.height)
@@ -695,6 +764,7 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(expireOldLogLines)
         mainHandler.removeCallbacks(renderLogLines)
         mainHandler.removeCallbacks(drainScreenLogs)
+        mainHandler.removeCallbacks(publishTimeline)
         currentSurface?.let { surface ->
             detachSurface(SCREEN_TYPE_MAIN, surface)
             surface.release()
@@ -705,6 +775,11 @@ class CarPlayHostActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /**
+     * View layers keep the video plumbing (TextureViews, touch forwarding, overlays drawn over
+     * video); everything else is one Compose layer on top. The window is edge-to-edge: the video
+     * is padded by the system bars and display cutout, Compose content by `safeDrawing`.
+     */
     private fun buildContentView(): View {
         val root = FrameLayout(this).apply {
             setBackgroundColor(NO_VIDEO_BACKGROUND)
@@ -722,78 +797,22 @@ class CarPlayHostActivity : ComponentActivity() {
             isClickable = true
             setOnTouchListener { view, event -> onHostTouch(view, event) }
         }
-        val log = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            textSize = 11f
-            typeface = Typeface.MONOSPACE
-            text = ""
-        }
-        val logScroll = object : ScrollView(this) {
-            override fun onInterceptTouchEvent(event: MotionEvent): Boolean = false
-            override fun onTouchEvent(event: MotionEvent): Boolean = false
-        }.apply {
-            setBackgroundColor(Color.argb(150, 0, 0, 0))
-            isFillViewport = false
-            isFocusable = false
-            addView(
-                log,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> scrollLogsToBottom() }
-        }
-        val settingsButton = ImageButton(this).apply {
-            setImageResource(R.drawable.ic_settings)
-            imageTintList = ColorStateList.valueOf(MENU_ACCENT)
-            background = menuRipple(
-                GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(MENU_BACKGROUND)
-                    setStroke(maxOf(1, dp(1)), MENU_SEPARATOR)
-                },
-            )
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            contentDescription = "Open settings"
-            setOnClickListener { openSettingsMenu() }
-        }
-        val statusParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or Gravity.START,
-        )
-        statusParams.setMargins(dp(12), 0, dp(12), dp(12))
-        val settingsButtonParams = FrameLayout.LayoutParams(
-            dp(56),
-            dp(56),
-            Gravity.BOTTOM or Gravity.END,
-        ).apply { setMargins(dp(16), 0, dp(16), dp(16)) }
-
-        val settings = buildSettingsMenu().apply { visibility = View.GONE }
-        val editor = buildSafeAreaEditor().apply { visibility = View.GONE }
-
-        val panel = HandshakePanelView(this).apply { visibility = View.GONE }
-        val mainFrame = FrameLayout(this).apply { addView(video) }
-        mainFrame.addView(
+        val frame = FrameLayout(this).apply { addView(video) }
+        frame.addView(
             gestureLayer,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
-        // Keep the connection UI inside the main display, leaving room for settings below.
-        mainFrame.addView(
-            panel,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ).apply { setMargins(dp(12), dp(12), dp(12), dp(84)) },
-        )
+        frame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                updateMediaMetricsOverlayLayout(right - left, bottom - top)
+            }
+        }
+        mainFrame = frame
         val cluster = TextureView(this).apply {
             isOpaque = false
-            visibility = View.GONE
             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
                     texture.setDefaultBufferSize(clusterWebDisplay.width, clusterWebDisplay.height)
@@ -809,21 +828,14 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         clusterPreview = cluster
-        val displays = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(cluster, LinearLayout.LayoutParams(1, 1).apply { gravity = Gravity.CENTER_HORIZONTAL })
-            addView(mainFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val displays = FrameLayout(this).apply {
+            addView(frame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        buildClusterPreviewWindow(displays, cluster)
+        padForSystemBars(displays)
         root.addView(displays, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        root.addView(logScroll, statusParams)
-        root.addView(settingsButton, settingsButtonParams)
-        root.addView(
-            settings,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            ),
-        )
+
+        val editor = buildSafeAreaEditor().apply { visibility = View.GONE }
         root.addView(
             editor,
             FrameLayout.LayoutParams(
@@ -831,725 +843,229 @@ class CarPlayHostActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+
+        // Areas without a composable underneath pass touches through to the layers below.
+        val compose = ComposeView(this).apply {
+            setContent {
+                XcertplayTheme {
+                    HostOverlay()
+                }
+            }
+        }
+        root.addView(
+            compose,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
-                updateMediaMetricsOverlayLayout(right - left, bottom - top)
                 updateWebDisplayPreviews()
             }
         }
         videoView = video
         gestureOverlay = gestureLayer
-        disconnectedSettingsButton = settingsButton
-        settingsMenu = settings
         safeAreaEditor = editor
-        statusView = log
-        statusScrollView = logScroll
         handshakeTimeline = HandshakeTimeline(wirelessEnabled, System.currentTimeMillis())
-        handshakePanel = panel.also { it.bind(handshakeTimeline) }
+        timelineRevision++
         updateWebDisplayPreviews()
         updateDebugOverlays()
         return root
     }
 
-    private fun buildSettingsMenu(): View {
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
-            isClickable = true
+    /**
+     * The main display always fills the screen; the instrument preview floats over it as a
+     * draggable picture-in-picture window that can be tucked into a handle on the left edge.
+     */
+    private fun buildClusterPreviewWindow(container: FrameLayout, cluster: TextureView) {
+        val minimize = android.widget.ImageView(this).apply {
+            setImageResource(R.drawable.ic_ms_arrow_back)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            contentDescription = I18n.text("settings.web.instrument")
+            setOnClickListener { setClusterPreviewCollapsed(true) }
         }
-        val panel = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(MENU_CORNER_DP).toFloat()
-                setColor(MENU_BACKGROUND)
+        val window = FrameLayout(this).apply {
+            visibility = View.GONE
+            isClickable = true
+            elevation = dp(6).toFloat()
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+                }
             }
             clipToOutline = true
+            setBackgroundColor(Color.BLACK)
+            addView(cluster, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(minimize, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.START).apply {
+                setMargins(dp(8), dp(8), 0, 0)
+            })
+            setOnTouchListener(clusterWindowDragListener())
         }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(48), dp(36), dp(48), dp(36))
+        val handle = android.widget.ImageView(this).apply {
+            visibility = View.GONE
+            setImageResource(R.drawable.ic_ms_chevron_right)
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            elevation = dp(3).toFloat()
+            contentDescription = I18n.text("settings.web.instrument")
+            setOnClickListener { setClusterPreviewCollapsed(false) }
         }
-        content.addView(
-            menuText("CarPlay settings", 32f, MENU_LABEL, bold = true).apply {
-                setPadding(dp(56), 0, 0, 0)
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        content.addView(
-            settingsCategoryHeader("Connection"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(32) },
-        )
-
-        content.addView(
-            buildMfiTargetSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(14) },
-        )
-
-        val wirelessRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        wirelessRow.addView(
-            menuText("Wireless CarPlay", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val wirelessSwitch = Switch(this).apply {
-            isChecked = wirelessEnabled
-            contentDescription = "Wireless CarPlay transport"
-            showText = false
-            thumbTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-            )
-            trackTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT_TRACK, MENU_TRACK_OFF),
-            )
-            setOnCheckedChangeListener { _, checked ->
-                if (wirelessEnabled == checked) return@setOnCheckedChangeListener
-                wirelessEnabled = checked
-                hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
-                updateHotspotStatusBlock()
-                appendLog(
-                    "Wireless CarPlay ${if (wirelessEnabled) "enabled" else "disabled"}; " +
-                        "applies when settings close",
-                )
-                requestStartupPrerequisites()
+        container.addView(window, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
+        container.addView(handle, FrameLayout.LayoutParams(dp(24), dp(64), Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(16)
+        })
+        clusterPreviewWindow = window
+        clusterPreviewMinimize = minimize
+        clusterPreviewHandle = handle
+        clusterPreviewContainer = container
+        clusterWindowX = dp(16).toFloat()
+        clusterWindowY = dp(16).toFloat()
+        styleClusterPreviewControls()
+        var area = 0 to 0
+        container.addOnLayoutChangeListener { view, left, top, right, bottom, _, _, _, _ ->
+            val next = (right - left - view.paddingLeft - view.paddingRight) to (bottom - top - view.paddingTop - view.paddingBottom)
+            if (next != area) {
+                area = next
+                view.post { updateWebDisplayPreviews() }
             }
         }
-        wirelessRow.addView(
-            wirelessSwitch,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        content.addView(
-            wirelessRow,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(30) },
-        )
+    }
 
-        content.addView(
-            buildHotspotModeSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(30) },
-        )
-
-        content.addView(
-            menuText("Hotspot status", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(18) },
-        )
-        val hotspotStatusView = menuText("", 16f, MENU_ACCENT)
-        content.addView(
-            hotspotStatusView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(6) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Vehicle data"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(36) },
-        )
-        content.addView(
-            buildVehicleDataSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Startup"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(36) },
-        )
-        content.addView(
-            settingsSwitchRow(
-                label = "Auto-start on boot",
-                checked = autoStartOnBoot,
-                description = "Start CarPlay automatically after device boot",
-            ) { checked ->
-                autoStartOnBoot = checked
-                appendLog("Boot auto-start ${if (checked) "enabled" else "disabled"}")
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Audio"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(36) },
-        )
-        content.addView(
-            buildStepSliderSection(
-                title = "Main media audio buffer",
-                values = (
-                    MainMediaAudioBuffer.MIN_DURATION_MS..MainMediaAudioBuffer.MAX_DURATION_MS
-                    step MainMediaAudioBuffer.STEP_DURATION_MS
-                    ).toList(),
-                selectedValue = mainMediaAudioBufferDurationMs,
-                label = ::mainMediaAudioBufferLabel,
-                onControlsCreated = { valueView, seekBar ->
-                    mainMediaAudioBufferValueView = valueView
-                    mainMediaAudioBufferSeekBar = seekBar
-                },
-                onValueChanged = { value ->
-                    mainMediaAudioBufferDurationMs = value
-                },
-            ),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            buildMicrophoneGainSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(20) },
-        )
-        if (advancedAudioChannelMappingSupported) {
-            content.addView(
-                settingsSwitchRow(
-                    label = "Advanced audio channel mapping",
-                    checked = advancedAudioChannelMapping,
-                    description = "Route AAOS audio buses by CarPlay audio type",
-                ) { checked ->
-                    advancedAudioChannelMapping = checked
-                    appendLog(
-                        "Advanced audio channel mapping ${if (checked) "enabled" else "disabled"}; " +
-                            "applies when settings close",
-                    )
-                    updateResolutionMenu()
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(20) },
-            )
-        }
-
-        content.addView(
-            settingsCategoryHeader("Identity & appearance"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(36) },
-        )
-        content.addView(
-            buildIdentitySettingsSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            buildAirPlayIconSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(26) },
-        )
-        content.addView(
-            buildDrivingSideSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(26) },
-        )
-        content.addView(
-            settingsCategoryHeader("Display & video"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(40) },
-        )
-
-        val resolutionHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        resolutionHeader.addView(
-            menuText("Resolution", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val resolutionValue = menuText(
-            CarPlayDisplayScale.label(displayScaleTenths),
-            28f,
-            MENU_ACCENT,
-            bold = true,
-        )
-        resolutionHeader.addView(
-            resolutionValue,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        content.addView(
-            resolutionHeader,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(14) },
-        )
-
-        val seekBar = SeekBar(this).apply {
-            max = CarPlayDisplayScale.MAX_TENTHS - CarPlayDisplayScale.MIN_TENTHS
-            progress = displayScaleTenths - CarPlayDisplayScale.MIN_TENTHS
-            splitTrack = false
-            progressTintList = ColorStateList.valueOf(MENU_ACCENT)
-            thumbTintList = ColorStateList.valueOf(MENU_ACCENT)
-            setOnSeekBarChangeListener(
-                object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
-                        displayScaleTenths = CarPlayDisplayScale.sanitize(
-                            CarPlayDisplayScale.MIN_TENTHS + progress,
-                        )
-                        updateResolutionMenu()
-                    }
-
-                    override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
-                },
-            )
-        }
-        content.addView(
-            seekBar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-
-        val range = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        range.addView(
-            menuText("0.3x", 15f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        range.addView(
-            menuText("1.0x", 15f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        content.addView(
-            range,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        content.addView(
-            buildStepSliderSection(
-                title = "Frame rate",
-                values = (
-                    AirPlayDisplaySettings.MIN_FPS..AirPlayDisplaySettings.MAX_FPS
-                    step AirPlayDisplaySettings.FPS_STEP
-                    ).toList(),
-                selectedValue = fps,
-                label = { "$it fps" },
-                onValueChanged = { value ->
-                    fps = value
-                    updateResolutionMenu()
-                },
-            ),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(24) },
-        )
-
-        content.addView(
-            settingsChoiceRow(
-                label = "Physical size basis",
-                options = listOf(
-                    AirPlayPhysicalSizeBasis.WIDTH to "Widest width",
-                    AirPlayPhysicalSizeBasis.HEIGHT to "Longest height",
-                ),
-                selected = physicalSizeBasis,
-            ) { value ->
-                physicalSizeBasis = value
-                updateResolutionMenu()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(24) },
-        )
-
-        content.addView(
-            buildStepSliderSection(
-                title = "Physical length",
-                values = (
-                    AirPlayDisplaySettings.MIN_WIDTH_PHYSICAL_MM..
-                        AirPlayDisplaySettings.MAX_WIDTH_PHYSICAL_MM
-                    step AirPlayDisplaySettings.WIDTH_PHYSICAL_MM_STEP
-                    ).toList(),
-                selectedValue = widthPhysicalMm,
-                label = { "$it mm" },
-                onValueChanged = { value ->
-                    widthPhysicalMm = value
-                    updateResolutionMenu()
-                },
-            ),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(16) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Web displays"),
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(32) },
-        )
-        for (type in listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT)) {
-            content.addView(buildWebDisplaySection(type),
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = dp(16) })
-        }
-        content.addView(
-            menuText(
-                "Web displays use HTTPS with a self-signed certificate so browsers can decode with WebCodecs " +
-                    "(H.265 included). Each browser warns once: choose to continue.",
-                13f,
-                MENU_SECONDARY,
-            ),
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(16) })
-
-        val hevcRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        hevcRow.addView(
-            menuText("HEVC (H.265)", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val hevcSwitch = Switch(this).apply {
-            isChecked = hevcEnabled
-            contentDescription = "HEVC H.265 video transport"
-            showText = false
-            thumbTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-            )
-            trackTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT_TRACK, MENU_TRACK_OFF),
-            )
-            setOnCheckedChangeListener { _, checked ->
-                if (hevcEnabled == checked) return@setOnCheckedChangeListener
-                hevcEnabled = checked
-                appendLog(
-                    "HEVC (H.265) ${if (hevcEnabled) "enabled" else "disabled"}; " +
-                        "applies when settings close",
-                )
-                updateResolutionMenu()
+    /** Lavender roles for the preview controls; reapplied when the system switches light/dark. */
+    private fun styleClusterPreviewControls() {
+        val scheme = if (darkMode) LavenderDark else LavenderLight
+        val container = scheme.surfaceContainerHigh.toArgb()
+        val content = android.content.res.ColorStateList.valueOf(scheme.onSurface.toArgb())
+        clusterPreviewMinimize?.apply {
+            imageTintList = content
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(container)
             }
         }
-        hevcRow.addView(
-            hevcSwitch,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        content.addView(
-            hevcRow,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(30) },
-        )
-
-        val softwareHevcRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        softwareHevcRow.addView(
-            menuText("HEVC software decoder", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val softwareHevcSwitch = Switch(this).apply {
-            isChecked = hevcSoftwareDecoderEnabled
-            contentDescription = "Use software HEVC decoder"
-            showText = false
-            thumbTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-            )
-            trackTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT_TRACK, MENU_TRACK_OFF),
-            )
-            setOnCheckedChangeListener { _, checked ->
-                if (hevcSoftwareDecoderEnabled == checked) return@setOnCheckedChangeListener
-                hevcSoftwareDecoderEnabled = checked
-                appendLog(
-                    "HEVC software decoder ${if (hevcSoftwareDecoderEnabled) "enabled" else "disabled"}; " +
-                        "applies when settings close",
-                )
-                updateResolutionMenu()
+        clusterPreviewHandle?.apply {
+            imageTintList = content
+            background = android.graphics.drawable.GradientDrawable().apply {
+                val r = dp(16).toFloat()
+                cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+                setColor(container)
+                setStroke(dp(1), scheme.outlineVariant.toArgb())
             }
         }
-        softwareHevcRow.addView(
-            softwareHevcSwitch,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+    }
+
+    /**
+     * One finger drags the preview window past the touch slop; two fingers pinch it around its
+     * centre. A gesture that pinched does not drag afterwards, so lifting one finger cannot jump.
+     */
+    private fun clusterWindowDragListener() = object : View.OnTouchListener {
+        private val slop = android.view.ViewConfiguration.get(this@CarPlayHostActivity).scaledTouchSlop
+        private var downX = 0f
+        private var downY = 0f
+        private var startX = 0f
+        private var startY = 0f
+        private var dragging = false
+        private var pinched = false
+        private val pinch = android.view.ScaleGestureDetector(
+            this@CarPlayHostActivity,
+            object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
+                    val params = clusterPreviewWindow?.layoutParams ?: return false
+                    val centerX = clusterWindowX + params.width / 2f
+                    val centerY = clusterWindowY + params.height / 2f
+                    clusterWindowScale *= detector.scaleFactor
+                    layoutClusterWindow()
+                    moveClusterWindow(centerX - params.width / 2f, centerY - params.height / 2f)
+                    return true
+                }
+            },
         )
+
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            pinch.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX; downY = event.rawY
+                    startX = clusterWindowX; startY = clusterWindowY
+                    dragging = false
+                    pinched = false
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> { pinched = true; dragging = false }
+                MotionEvent.ACTION_MOVE -> {
+                    if (pinched) return true
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (!dragging && dx * dx + dy * dy > slop * slop) dragging = true
+                    if (dragging) moveClusterWindow(startX + dx, startY + dy)
+                }
+            }
+            return true
+        }
+    }
+
+    /**
+     * Sizes the preview window: a default fit inside the safe area times the pinch
+     * [clusterWindowScale], from [CLUSTER_WINDOW_MIN_WIDTH_DP] wide up to filling the safe area.
+     */
+    private fun layoutClusterWindow() {
+        val window = clusterPreviewWindow ?: return
+        val container = clusterPreviewContainer ?: return
+        val availableWidth = container.width - container.paddingLeft - container.paddingRight
+        val availableHeight = container.height - container.paddingTop - container.paddingBottom
+        if (availableWidth <= 0 || availableHeight <= 0) return
+        val fit = minOf(availableWidth.toDouble() / clusterWebDisplay.width, availableHeight.toDouble() / clusterWebDisplay.height)
+        val default = minOf(
+            availableWidth * CLUSTER_WINDOW_MAX_WIDTH_FRACTION / clusterWebDisplay.width,
+            availableHeight * CLUSTER_WINDOW_MAX_HEIGHT_FRACTION / clusterWebDisplay.height,
+        )
+        val min = minOf(dp(CLUSTER_WINDOW_MIN_WIDTH_DP).toDouble() / clusterWebDisplay.width, default)
+        clusterWindowScale = clusterWindowScale.coerceIn((min / default).toFloat(), (fit / default).toFloat())
+        val scale = default * clusterWindowScale
+        val params = window.layoutParams
+        val width = (clusterWebDisplay.width * scale).toInt().coerceAtLeast(1)
+        val height = (clusterWebDisplay.height * scale).toInt().coerceAtLeast(1)
+        if (params.width != width || params.height != height) { params.width = width; params.height = height; window.layoutParams = params }
+        moveClusterWindow(clusterWindowX, clusterWindowY)
+    }
+
+    /** Places the preview window at ([x], [y]) inside the safe area, clamped to stay fully visible. */
+    private fun moveClusterWindow(x: Float, y: Float) {
+        val window = clusterPreviewWindow ?: return
+        val container = clusterPreviewContainer ?: return
+        val maxX = container.width - container.paddingLeft - container.paddingRight - window.layoutParams.width
+        val maxY = container.height - container.paddingTop - container.paddingBottom - window.layoutParams.height
+        clusterWindowX = x.coerceIn(0f, maxOf(0, maxX).toFloat())
+        clusterWindowY = y.coerceIn(0f, maxOf(0, maxY).toFloat())
+        window.translationX = clusterWindowX
+        window.translationY = clusterWindowY
+    }
+
+    /** Keeps [view]'s content (the CarPlay video) clear of visible system bars and the cutout. */
+    private fun padForSystemBars(view: View) {
+        ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+    }
+
+    /** Transparent system bars over our own surfaces; layout runs into the cutout area. */
+    private fun prepareEdgeToEdgeWindow() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        window.statusBarColor = Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = Color.TRANSPARENT
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            content.addView(
-                softwareHevcRow,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(16) },
-            )
+            @Suppress("DEPRECATION")
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
         }
-
-        content.addView(
-            buildSafeAreaSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(30) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Window"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(40) },
-        )
-        content.addView(
-            buildFullscreenSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            settingsSwitchRow(
-                label = "More gestures to Settings page",
-                checked = moreGesturesToSettings,
-                description = "Enable a one-finger swipe down along the left edge to open settings",
-            ) { checked -> moreGesturesToSettings = checked },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        content.addView(
-            settingsCategoryHeader("Diagnostics"),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(40) },
-        )
-        content.addView(
-            buildMediaMetricsSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            buildAudioPacketCaptureSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(20) },
-        )
-        content.addView(
-            buildDebugLogsSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(20) },
-        )
-        content.addView(
-            buildVideoFrameLogsSection(),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            Button(this).apply {
-                text = "Open system Bluetooth settings"
-                applyMenuButtonStyle(MENU_BUTTON_PRIMARY)
-                textSize = 17f
-                minHeight = dp(52)
-                setOnClickListener { openSystemBluetoothSettings() }
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(16) },
-        )
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            content.addView(
-                settingsCategoryHeader("Android 9 compatibility"),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(40) },
-            )
-            content.addView(
-                menuText(
-                    "The following settings are unavailable and hidden on Android 9 " +
-                        "(API 28):\n" +
-                        "• Wi-Fi P2P (5 GHz) — LocalOnlyHotspot is used instead.\n" +
-                        "• HEVC software decoder — hardware decoding is used instead.",
-                    16f,
-                    MENU_SECONDARY,
-                ),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(12) },
-            )
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-
-        val preview = menuText("", 17f, MENU_SECONDARY)
-        content.addView(
-            preview,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(30) },
-        )
-
-        val save = Button(this).apply {
-            text = "Save and reconnect"
-            applyMenuButtonStyle(MENU_BUTTON_PRIMARY)
-            textSize = 17f
-            minHeight = dp(52)
-            setOnClickListener { saveSettingsAndReconnect() }
-        }
-        content.addView(
-            save,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(46) },
-        )
-
-        val exitApplicationButton = Button(this).apply {
-            text = "EXIT APPLICATION"
-            applyMenuButtonStyle(MENU_DANGER_FILL, MENU_DANGER)
-            textSize = 17f
-            minHeight = dp(52)
-            setOnClickListener { exitApplication() }
-        }
-        content.addView(
-            exitApplicationButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            addView(
-                content,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-        }
-        panel.addView(
-            scroll,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            ),
-        )
-        panel.addView(
-            ImageButton(this).apply {
-                setImageResource(R.drawable.ic_hs_close)
-                imageTintList = ColorStateList.valueOf(MENU_LABEL)
-                background = menuRipple(
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(MENU_BUTTON)
-                    },
-                )
-                contentDescription = "Discard changes and exit settings"
-                setPadding(dp(12), dp(12), dp(12), dp(12))
-                setOnClickListener { cancelSettingsEdits() }
-            },
-            FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply {
-                leftMargin = dp(16)
-                topMargin = dp(16)
-            },
-        )
-        val panelInset = dp(12)
-        overlay.addView(
-            panel,
-            FrameLayout.LayoutParams(
-                minOf(resources.displayMetrics.widthPixels - 2 * panelInset, MAX_SETTINGS_MENU_WIDTH_PX),
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                Gravity.CENTER,
-            ).apply { setMargins(0, panelInset, 0, panelInset) },
-        )
-        overlay.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
-            val desiredWidth = minOf(view.width - 2 * panelInset, MAX_SETTINGS_MENU_WIDTH_PX)
-            val params = panel.layoutParams
-            if (params.width != desiredWidth) {
-                params.width = desiredWidth
-                panel.layoutParams = params
-            }
-        }
-
-        resolutionValueView = resolutionValue
-        resolutionPreviewView = preview
-        this.hotspotStatusView = hotspotStatusView
-        updateHotspotStatusBlock()
-        updateResolutionMenu()
-        return overlay
     }
 
     private fun persistMenuSettings() {
@@ -1617,8 +1133,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun restoreSettingsBaseline() {
         val baseline = settingsBaseline ?: return
         loadPersistedSettings()
-        webDisplayRefresh.forEach { it() }
-        videoFrameLogSwitch?.isChecked = videoFrameLogsEnabled
+        resetWebDisplayDrafts()
         updateWebDisplayPreviews()
         baseline.safeAreaSize?.let { size ->
             baseline.safeAreaRect?.let { rect ->
@@ -1667,311 +1182,32 @@ class CarPlayHostActivity : ComponentActivity() {
         updateResolutionMenu()
     }
 
-    private fun buildWebDisplaySection(type: Int): View {
-        val section = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val enabled = settingsSwitchRow(
-            label = if (type == SCREEN_TYPE_MAIN) "Main display" else "Instrument display",
-            checked = webDisplayConfig(type).enabled,
-            description = "Open this display in a browser on the same network",
-        ) { checked ->
-            setWebDisplayConfig(type, webDisplayConfig(type).copy(enabled = checked))
-            details.visibility = if (checked) View.VISIBLE else View.GONE
-        }
-        section.addView(enabled)
-        val resolution = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        fun dimension(value: Int, hint: String) = EditText(this).apply {
-            setText(value.toString()); this.hint = hint; contentDescription = hint
-            inputType = InputType.TYPE_CLASS_NUMBER; setSingleLine(); setTextColor(MENU_LABEL)
-            setHintTextColor(MENU_SECONDARY); backgroundTintList = ColorStateList.valueOf(MENU_ACCENT)
-        }
-        val width = dimension(webDisplayConfig(type).width, "Width")
-        val height = dimension(webDisplayConfig(type).height, "Height")
-        webDisplayInputs[type] = width to height
-        resolution.addView(width, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        resolution.addView(menuText(" × ", 18f, MENU_SECONDARY))
-        resolution.addView(height, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        details.addView(menuText("Resolution", 15f, MENU_SECONDARY))
-        details.addView(resolution)
-        val preview = settingsSwitchRow("Local preview", webDisplayConfig(type).preview,
-            "Fit the preview to the configured resolution") { checked ->
-            setWebDisplayConfig(type, webDisplayConfig(type).copy(preview = checked))
-        }
-        details.addView(preview)
-        val address = menuText("", 13f, MENU_ACCENT).apply { setTextIsSelectable(true) }
-        webDisplayAddressViews[type] = address
-        details.addView(address)
-        details.addView(menuText("Apply with Save & Reconnect", 13f, MENU_SECONDARY))
-        section.addView(details)
-        webDisplayRefresh += {
-            val config = webDisplayConfig(type)
-            ((enabled as ViewGroup).getChildAt(1) as Switch).isChecked = config.enabled
-            ((preview as ViewGroup).getChildAt(1) as Switch).isChecked = config.preview
-            width.setText(config.width.toString()); height.setText(config.height.toString())
-            width.error = null; height.error = null
-            details.visibility = if (config.enabled) View.VISIBLE else View.GONE
-            updateWebDisplayAddresses()
-        }
-        webDisplayRefresh.last().invoke()
-        return section
-    }
-
     private fun updateWebDisplayAddresses() {
-        for ((type, view) in webDisplayAddressViews) {
-            view.text = CarPlayWebDisplayFactory.urls(type, AirPlayPersistence.webDisplayKey(this))
-                .joinToString("\n").ifEmpty { "Connect to a local network to get the display address" }
+        val key = AirPlayPersistence.webDisplayKey(this)
+        webDisplayAddresses = listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT).associateWith { type ->
+            CarPlayWebDisplayFactory.urls(type, key).joinToString("\n")
         }
     }
 
     private fun validateWebDisplaySettings(): Boolean {
-        for ((type, inputs) in webDisplayInputs) {
+        for (type in listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT)) {
             val config = webDisplayConfig(type)
             if (!config.enabled) continue
-            val updated = runCatching { config.copy(width = inputs.first.text.toString().toInt(), height = inputs.second.text.toString().toInt()) }
-                .getOrElse {
-                    inputs.first.error = "Use even dimensions: 320–3840 × 240–2160"
-                    inputs.second.error = inputs.first.error
-                    inputs.first.requestFocus()
-                    return false
-                }
+            val draft = webDisplayDrafts[type] ?: continue
+            val updated = runCatching {
+                config.copy(width = draft.width.trim().toInt(), height = draft.height.trim().toInt())
+            }.getOrElse {
+                webDisplayDrafts[type] = draft.copy(error = true)
+                settingsCategory = SettingsCategory.WEB
+                return false
+            }
             setWebDisplayConfig(type, updated)
         }
         return true
     }
 
-    private fun buildMfiTargetSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val targetChoice = settingsChoiceRow(
-            label = "MFI certificate & signing target",
-            options = listOf(
-                MfiTarget.USB_CH341 to "USB/CH341",
-                MfiTarget.I2C to "I2C",
-                MfiTarget.REMOTE to "Remote",
-                MfiTarget.LOCAL_FILES to "Local files",
-            ),
-            selected = mfiTarget,
-        ) { target ->
-            if (mfiTarget == target) return@settingsChoiceRow
-            mfiTarget = target
-            updateMfiTargetFields()
-            appendLog("MFI target: ${mfiTargetLabel(target)}; applies when settings close")
-        }
-        mfiTargetGroup = (targetChoice as ViewGroup).getChildAt(1) as RadioGroup
-        section.addView(
-            targetChoice,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        val i2cFields = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(
-                settingsInputRow(
-                    "I2C device",
-                    mfiI2cPath,
-                    onInputCreated = { mfiI2cPathInput = it },
-                ) { value ->
-                    mfiI2cPath = value
-                    mfiErrorView?.visibility = View.GONE
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                menuText("Linux device path, for example /dev/i2c-1.", 14f, MENU_SECONDARY),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(4) },
-            )
-        }
-        section.addView(
-            i2cFields,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        mfiI2cFields = i2cFields
-
-        val remoteFields = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(
-                settingsInputRow(
-                    "Server address",
-                    remoteMfiServer,
-                    onInputCreated = { remoteMfiServerInput = it },
-                ) { value ->
-                    remoteMfiServer = value
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                settingsInputRow(
-                    "Token (optional)",
-                    remoteMfiToken,
-                    password = true,
-                    onInputCreated = { remoteMfiTokenInput = it },
-                ) { value ->
-                    remoteMfiToken = value
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(8) },
-            )
-            addView(
-                menuText(
-                    "Address must start with http:// or https://. Token is optional and sent " +
-                        "as an Authorization bearer token.",
-                    14f,
-                    MENU_SECONDARY,
-                ),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(4) },
-            )
-        }
-        section.addView(
-            remoteFields,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        mfiRemoteFields = remoteFields
-
-        val localFields = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(
-                localMfiDocumentRow(
-                    "Certificate (.p7b)",
-                    localMfiCertificateUri,
-                    onDocumentViewCreated = { localMfiCertificateDocumentView = it },
-                ) {
-                    externalActivityInProgress = true
-                    localMfiCertificatePicker.launch(arrayOf("*/*"))
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                localMfiDocumentRow(
-                    "Private key (.pk8)",
-                    localMfiPrivateKeyUri,
-                    onDocumentViewCreated = { localMfiPrivateKeyDocumentView = it },
-                ) {
-                    externalActivityInProgress = true
-                    localMfiPrivateKeyPicker.launch(arrayOf("*/*"))
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(8) },
-            )
-            addView(
-                menuText(
-                    "Select a DER PKCS#7 certificate and its matching unencrypted DER PKCS#8 " +
-                        "private key. Documents are reloaded when MFI reconnects.",
-                    14f,
-                    MENU_SECONDARY,
-                ),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(4) },
-            )
-        }
-        section.addView(
-            localFields,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        mfiLocalFields = localFields
-        val error = menuText("", 14f, MENU_DANGER).apply {
-            visibility = View.GONE
-        }
-        section.addView(
-            error,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(6) },
-        )
-        mfiErrorView = error
-        updateMfiTargetFields()
-        return section
-    }
-
     private fun updateMfiTargetFields() {
-        mfiI2cFields?.visibility = if (mfiTarget == MfiTarget.I2C) View.VISIBLE else View.GONE
-        mfiRemoteFields?.visibility = if (mfiTarget == MfiTarget.REMOTE) View.VISIBLE else View.GONE
-        mfiLocalFields?.visibility = if (mfiTarget == MfiTarget.LOCAL_FILES) View.VISIBLE else View.GONE
-        mfiErrorView?.visibility = View.GONE
-    }
-
-    private fun localMfiDocumentRow(
-        label: String,
-        uri: String,
-        onDocumentViewCreated: (TextView) -> Unit,
-        onChoose: () -> Unit,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(
-            menuText(label, 15f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val row = LinearLayout(this@CarPlayHostActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val documentView = menuText(localMfiDocumentLabel(uri), 14f, MENU_SECONDARY)
-        onDocumentViewCreated(documentView)
-        row.addView(
-            documentView,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        row.addView(
-            Button(this@CarPlayHostActivity).apply {
-                text = "Choose"
-                applyMenuButtonStyle()
-                contentDescription = "Choose $label"
-                setOnClickListener { onChoose() }
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { marginStart = dp(12) },
-        )
-        addView(
-            row,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(4) },
-        )
-    }
-
-    private fun updateLocalMfiDocumentViews() {
-        localMfiCertificateDocumentView?.text = localMfiDocumentLabel(localMfiCertificateUri)
-        localMfiPrivateKeyDocumentView?.text = localMfiDocumentLabel(localMfiPrivateKeyUri)
+        mfiError = null
     }
 
     private fun localMfiDocumentLabel(value: String): String {
@@ -2012,23 +1248,6 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun syncMfiSettingsControls() {
-        mfiTargetGroup?.let { group ->
-            val button = (0 until group.childCount)
-                .map { group.getChildAt(it) }
-                .filterIsInstance<RadioButton>()
-                .firstOrNull { it.tag == mfiTarget }
-            button?.let { group.check(it.id) }
-        }
-        if (mfiI2cPathInput?.text?.toString() != mfiI2cPath) {
-            mfiI2cPathInput?.setText(mfiI2cPath)
-        }
-        if (remoteMfiServerInput?.text?.toString() != remoteMfiServer) {
-            remoteMfiServerInput?.setText(remoteMfiServer)
-        }
-        if (remoteMfiTokenInput?.text?.toString() != remoteMfiToken) {
-            remoteMfiTokenInput?.setText(remoteMfiToken)
-        }
-        updateLocalMfiDocumentViews()
         updateMfiTargetFields()
     }
 
@@ -2037,93 +1256,6 @@ class CarPlayHostActivity : ComponentActivity() {
         MfiTarget.I2C -> "I2C"
         MfiTarget.REMOTE -> "Remote"
         MfiTarget.LOCAL_FILES -> "Local files"
-    }
-
-    private fun buildIdentitySettingsSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            settingsInputRow("Manufacturer", manufacturer) { value ->
-                manufacturer = value
-                updateResolutionMenu()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        section.addView(
-            settingsInputRow("Model", model) { value ->
-                model = value
-                updateResolutionMenu()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        section.addView(
-            settingsInputRow("OEM label", oemLabel) { value ->
-                oemLabel = value
-                updateResolutionMenu()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        return section
-    }
-
-    private fun settingsCategoryHeader(title: String): TextView =
-        menuText(title, 16f, MENU_ACCENT, bold = true)
-
-    private fun buildVehicleDataSection(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(buildLocationReportingSection())
-        val platforms = com.shilapi.xcertplay.vehicle.VehiclePlatform.entries
-        addView(settingsChoiceRow(
-            label = "Vehicle property source",
-            options = listOf(platforms[0] to "Standard Android Automotive"),
-            selected = vehicleDataConfig.platform,
-        ) { platform -> vehicleDataConfig = vehicleDataConfig.copy(platform = platform); updateVehicleDataStatus() })
-        VehicleDataFeature.entries.forEach { feature ->
-            if (!feature.sourceImplemented) {
-                addView(menuText("${feature.label}: unavailable — ${feature.description}", 14f, MENU_SECONDARY))
-                return@forEach
-            }
-            addView(settingsSwitchRow(
-                label = feature.label,
-                checked = vehicleDataConfig.isEnabled(feature),
-                description = feature.description + "; applies when settings close",
-             ) { checked ->
-                vehicleDataConfig = vehicleDataConfig.with(feature, checked)
-                if (feature == VehicleDataFeature.WHEEL_SPEED && checked) requestVehicleSpeedPermission()
-                updateVehicleDataStatus()
-            })
-        }
-        vehicleDataStatusView = menuText("", 14f, MENU_SECONDARY).also { addView(it) }
-        addView(Button(this@CarPlayHostActivity).apply {
-            text = "Refresh permission & saved diagnostics"
-            applyMenuButtonStyle()
-            setOnClickListener { updateVehicleDataStatus() }
-        })
-        if (canRequestVehicleSpeedPermission()) addView(Button(this@CarPlayHostActivity).apply {
-            text = "Grant vehicle speed permission"
-            applyMenuButtonStyle()
-            setOnClickListener { requestVehicleSpeedPermission() }
-        })
-        addView(menuText(
-            "Cabin temperature, alerts, HVAC, doors, windows and tire pressure have no verified adapter " +
-                "to the phone in this app. Their vehicle properties are not silently sent.", 14f, MENU_SECONDARY,
-        ))
-        updateVehicleDataStatus()
-        addView(menuText(
-            "GPS requires precise location permission. Vehicle features need readable car properties; " +
-                "unavailable or stale readings are omitted. Updates are sent only after iPhone subscription.",
-            14f, MENU_SECONDARY,
-        ))
     }
 
     private fun canRequestVehicleSpeedPermission(): Boolean = runCatching {
@@ -2147,7 +1279,7 @@ class CarPlayHostActivity : ComponentActivity() {
             val speedPermission = if (!canRequestVehicleSpeedPermission()) "not applicable on this device"
                 else if (checkSelfPermission("android.car.permission.CAR_SPEED") == PackageManager.PERMISSION_GRANTED) "granted"
                 else "not granted"
-            vehicleDataStatusView?.text = "Settings pauses CarPlay. The data below was captured before it stopped; " +
+            vehicleDataStatusText = "Settings pauses CarPlay. The data below was captured before it stopped; " +
                 "Save & Reconnect acquires new readings.\n" + lastVehicleDataDiagnostics +
                 "\nCurrent vehicle speed permission: $speedPermission" +
                 "\nNext connection source: ${vehicleDataConfig.platform.name.replace('_', ' ')}" +
@@ -2169,7 +1301,7 @@ class CarPlayHostActivity : ComponentActivity() {
             return if (stale) "stale" else "unavailable"
         }
         val subscription = if (provider?.subscriptionActive == true) "phone subscribed" else "waiting for phone subscription"
-        vehicleDataStatusView?.text = buildString {
+        vehicleDataStatusText = buildString {
             append("Last connection diagnostics\n")
             append("GPS · Android location: ")
             append(when {
@@ -2202,61 +1334,6 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun buildLocationReportingSection(): View =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val row = LinearLayout(this@CarPlayHostActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            row.addView(
-                menuText("Report location to iPhone", 20f, MENU_SECONDARY),
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-            )
-            val switch = Switch(this@CarPlayHostActivity).apply {
-                isChecked = locationReportingEnabled
-                contentDescription = "Report Android location to the iPhone"
-                showText = false
-                thumbTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-                )
-                trackTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT_TRACK, MENU_TRACK_OFF),
-                )
-                setOnCheckedChangeListener { _, checked ->
-                    onLocationReportingChanged(checked)
-                }
-            }
-            locationReportingSwitch = switch
-            row.addView(
-                switch,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                row,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                menuText(
-                    "Sends precise Android location as CarPlay GPS data when the iPhone requests it.",
-                    14f,
-                    MENU_SECONDARY,
-                ),
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(6) },
-            )
-        }
-
     private fun onLocationReportingChanged(checked: Boolean) {
         if (locationReportingEnabled == checked) return
         locationReportingEnabled = checked
@@ -2270,202 +1347,6 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun buildDebugLogsSection(): View =
-        settingsSwitchRow(
-            label = "Debug logs",
-            checked = debugLogsEnabled,
-            description = "Show on-screen debug logs",
-        ) { checked ->
-            debugLogsEnabled = checked
-            if (!checked) clearScreenLogs()
-            appendLog("Debug logs ${if (debugLogsEnabled) "enabled" else "disabled"}")
-            updateDebugOverlays()
-        }
-
-    private fun buildVideoFrameLogsSection(): View =
-        settingsSwitchRow(
-            label = "Raw video in saved log",
-            checked = videoFrameLogsEnabled,
-            description = "Include original video packets in the saved log",
-            onSwitchCreated = { videoFrameLogSwitch = it },
-        ) { checked ->
-            videoFrameLogsEnabled = checked
-            sessionLog.videoFramesEnabled = checked
-            appendLog("Raw video file logging ${if (checked) "enabled" else "disabled"}")
-        }
-
-    private fun buildMediaMetricsSection(): View =
-        settingsSwitchRow(
-            label = "Media latency monitor",
-            checked = mediaMetricsEnabled,
-            description = "Show live video latency, frame rate, and audio latency",
-        ) { checked ->
-            mediaMetricsEnabled = checked
-            appendLog("Media latency monitor ${if (checked) "enabled" else "disabled"}")
-            updateMediaMetricsOverlay()
-        }
-
-    private fun buildAudioPacketCaptureSection(): View =
-        settingsSwitchRow(
-            label = "Audio diagnostic capture",
-            checked = audioPacketCaptureEnabled,
-            description = "Capture encrypted UDP and decrypted RTP audio packets for diagnostics",
-        ) { checked ->
-            audioPacketCaptureEnabled = checked
-            appendLog(
-                "Audio diagnostic capture ${if (checked) "enabled" else "disabled"}; " +
-                    "applies when settings close",
-            )
-        }
-
-    private fun buildMicrophoneGainSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        header.addView(
-            menuText("Microphone gain (0.8x–2.0x)", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val gainValue = menuText(
-            microphoneGainLabel(microphoneGainPercent),
-            22f,
-            MENU_ACCENT,
-            bold = true,
-        )
-        microphoneGainValueView = gainValue
-        header.addView(
-            gainValue,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        section.addView(
-            header,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val gainSlider = SeekBar(this).apply {
-            max = (MicrophoneGain.MAX_PERCENT - MicrophoneGain.MIN_PERCENT) /
-                MicrophoneGain.STEP_PERCENT
-            progress = (microphoneGainPercent - MicrophoneGain.MIN_PERCENT) /
-                MicrophoneGain.STEP_PERCENT
-            splitTrack = false
-            progressTintList = ColorStateList.valueOf(MENU_ACCENT)
-            thumbTintList = ColorStateList.valueOf(MENU_ACCENT)
-            contentDescription = "Microphone gain"
-            setOnSeekBarChangeListener(
-                object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(
-                        seekBar: SeekBar,
-                        progress: Int,
-                        fromUser: Boolean,
-                    ) {
-                        val percent = MicrophoneGain.sanitize(
-                            MicrophoneGain.MIN_PERCENT +
-                                progress * MicrophoneGain.STEP_PERCENT,
-                        )
-                        microphoneGainPercent = percent
-                        microphoneGainValueView?.text = microphoneGainLabel(percent)
-                    }
-
-                    override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
-                },
-            )
-        }
-        microphoneGainSeekBar = gainSlider
-        controls.addView(
-            gainSlider,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val testButton = Button(this).apply {
-            text = "Test"
-            applyMenuButtonStyle(MENU_BUTTON_PRIMARY)
-            textSize = 16f
-            minWidth = dp(78)
-            contentDescription = "Test microphone level"
-            setOnClickListener {
-                if (microphoneLevelMonitor?.isRunning == true) {
-                    stopMicrophoneGainTest()
-                } else {
-                    startMicrophoneGainTest()
-                }
-            }
-        }
-        microphoneTestButton = testButton
-        controls.addView(
-            testButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { leftMargin = dp(12) },
-        )
-        section.addView(
-            controls,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(6) },
-        )
-
-        val levelHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        levelHeader.addView(
-            menuText("Peak level", 15f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val levelValue = menuText("0%", 15f, MENU_SECONDARY)
-        microphoneLevelValueView = levelValue
-        levelHeader.addView(
-            levelValue,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        section.addView(
-            levelHeader,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        val levelBar = ProgressBar(
-            this,
-            null,
-            android.R.attr.progressBarStyleHorizontal,
-        ).apply {
-            max = 100
-            progress = 0
-            progressTintList = ColorStateList.valueOf(MENU_ACCENT)
-            progressBackgroundTintList = ColorStateList.valueOf(MENU_TRACK_OFF)
-            contentDescription = "Microphone peak level"
-        }
-        microphoneLevelBar = levelBar
-        section.addView(
-            levelBar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(14),
-            ).apply { topMargin = dp(4) },
-        )
-        return section
-    }
-
     private fun mainMediaAudioBufferLabel(durationMs: Int): String =
         String.format(
             Locale.US,
@@ -2473,30 +1354,25 @@ class CarPlayHostActivity : ComponentActivity() {
             MainMediaAudioBuffer.sanitizeDurationMs(durationMs),
         )
 
-    private fun microphoneGainLabel(percent: Int): String =
-        String.format(Locale.US, "%.1fx", MicrophoneGain.sanitize(percent) / 100.0)
+    private fun microphoneGainLabel(percent: Int): String {
+        val gain = MicrophoneGain.sanitize(percent)
+        // Sub-unity steps are only ~0.06x apart, so one decimal would show duplicates.
+        return String.format(Locale.US, if (gain < 100) "%.2fx" else "%.1fx", gain / 100.0)
+    }
 
     private fun syncMainMediaAudioBufferControls() {
-        val durationMs = MainMediaAudioBuffer.sanitizeDurationMs(mainMediaAudioBufferDurationMs)
-        mainMediaAudioBufferDurationMs = durationMs
-        mainMediaAudioBufferValueView?.text = mainMediaAudioBufferLabel(durationMs)
-        mainMediaAudioBufferSeekBar?.progress =
-            (durationMs - MainMediaAudioBuffer.MIN_DURATION_MS) /
-                MainMediaAudioBuffer.STEP_DURATION_MS
+        mainMediaAudioBufferDurationMs = MainMediaAudioBuffer.sanitizeDurationMs(mainMediaAudioBufferDurationMs)
     }
 
     private fun syncMicrophoneGainControls() {
-        microphoneGainValueView?.text = microphoneGainLabel(microphoneGainPercent)
-        microphoneGainSeekBar?.progress =
-            (microphoneGainPercent - MicrophoneGain.MIN_PERCENT) /
-                MicrophoneGain.STEP_PERCENT
+        microphoneGainPercent = MicrophoneGain.sanitize(microphoneGainPercent)
     }
 
     private fun startMicrophoneGainTest() {
         if (!menuOpen || handshakeResetInProgress || microphoneLevelMonitor != null) return
         if (!microphoneAvailable) {
             microphoneGainTestAfterPermission = true
-            microphoneLevelValueView?.text = "Permission required"
+            micLevelText = tr("settings.audio.permission_required")
             microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
@@ -2510,32 +1386,30 @@ class CarPlayHostActivity : ComponentActivity() {
                     if (microphoneLevelMonitor !== monitor || !menuOpen || isDestroyed) {
                         return@runOnUiThread
                     }
-                    microphoneLevelBar?.progress = peak
-                    microphoneLevelValueView?.text = "$peak%"
+                    micPeakPercent = peak
+                    micLevelText = "$peak%"
                 }
             },
             onStopped = { error ->
                 runOnUiThread {
                     if (microphoneLevelMonitor !== monitor) return@runOnUiThread
                     microphoneLevelMonitor = null
-                    microphoneTestButton?.text = "Test"
-                    microphoneTestButton?.isEnabled = menuOpen && !handshakeResetInProgress
+                    micTestRunning = false
                     if (error != null) {
                         Log.e(TAG, "microphone gain test failed", error)
-                        microphoneLevelBar?.progress = 0
-                        microphoneLevelValueView?.text =
-                            error.message ?: "Test failed"
+                        micPeakPercent = 0
+                        micLevelText = error.message ?: tr("settings.audio.test_failed")
                     }
                 }
             },
         )
         microphoneLevelMonitor = monitor
-        microphoneTestButton?.text = "Stop"
-        microphoneLevelBar?.progress = 0
-        microphoneLevelValueView?.text = "Listening…"
+        micTestRunning = true
+        micPeakPercent = 0
+        micLevelText = tr("settings.audio.listening")
         if (!monitor.start()) {
             microphoneLevelMonitor = null
-            microphoneTestButton?.text = "Test"
+            micTestRunning = false
         }
     }
 
@@ -2544,9 +1418,9 @@ class CarPlayHostActivity : ComponentActivity() {
         val monitor = microphoneLevelMonitor
         microphoneLevelMonitor = null
         monitor?.close()
-        microphoneTestButton?.text = "Test"
-        microphoneLevelBar?.progress = 0
-        microphoneLevelValueView?.text = "0%"
+        micTestRunning = false
+        micPeakPercent = 0
+        micLevelText = "0%"
     }
 
     private fun openSystemBluetoothSettings() {
@@ -2561,320 +1435,7 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun buildStepSliderSection(
-        title: String,
-        values: List<Int>,
-        selectedValue: Int,
-        label: (Int) -> String,
-        onControlsCreated: ((TextView, SeekBar) -> Unit)? = null,
-        onValueChanged: (Int) -> Unit,
-    ): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        header.addView(
-            menuText(title, 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val selectedIndex = values.indexOf(selectedValue)
-            .takeIf { it >= 0 }
-            ?: 0
-        val valueView = menuText(label(values[selectedIndex]), 22f, MENU_ACCENT, bold = true)
-        header.addView(
-            valueView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        section.addView(
-            header,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val seekBar = SeekBar(this).apply {
-            max = (values.size - 1).coerceAtLeast(0)
-            progress = selectedIndex
-            splitTrack = false
-            progressTintList = ColorStateList.valueOf(MENU_ACCENT)
-            thumbTintList = ColorStateList.valueOf(MENU_ACCENT)
-            setOnSeekBarChangeListener(
-                object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
-                        val value = values.getOrNull(progress) ?: return
-                        valueView.text = label(value)
-                        if (fromUser) onValueChanged(value)
-                    }
-
-                    override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
-                },
-            )
-        }
-        section.addView(
-            seekBar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        onControlsCreated?.invoke(valueView, seekBar)
-        return section
-    }
-
-    private fun buildAirPlayIconSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            menuText("AirPlay icon", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val preview = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(8).toFloat()
-                setColor(MENU_TRACK_OFF)
-            }
-        }
-        row.addView(
-            preview,
-            LinearLayout.LayoutParams(dp(72), dp(72)),
-        )
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        actions.addView(
-            Button(this).apply {
-                text = "Choose image"
-                applyMenuButtonStyle()
-                setOnClickListener {
-                    externalActivityInProgress = true
-                    imagePicker.launch("image/*")
-                }
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        actions.addView(
-            Button(this).apply {
-                text = "Default icon"
-                applyMenuButtonStyle()
-                setOnClickListener {
-                    AirPlayPersistence.clearCustomAirPlayIcon(this@CarPlayHostActivity)
-                    updateAirPlayIconPreview()
-                }
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        row.addView(
-            actions,
-            LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f,
-            ).apply { marginStart = dp(16) },
-        )
-        section.addView(
-            row,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        val status = menuText("", 14f, MENU_SECONDARY)
-        section.addView(
-            status,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        iconPreviewView = preview
-        iconStatusView = status
-        updateAirPlayIconPreview()
-        return section
-    }
-
-    private fun buildDrivingSideSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            menuText("Driving side", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val group = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-        }
-        val left = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "Left-hand drive"
-            setTextColor(MENU_SECONDARY)
-            buttonTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-            )
-            isChecked = !rightHandDrive
-        }
-        val right = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "Right-hand drive"
-            setTextColor(MENU_SECONDARY)
-            buttonTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-            )
-            isChecked = rightHandDrive
-        }
-        group.addView(left)
-        group.addView(right)
-        group.setOnCheckedChangeListener { _, checkedId ->
-            rightHandDrive = checkedId == right.id
-            updateResolutionMenu()
-        }
-        section.addView(
-            group,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        return section
-    }
-
-    private fun buildFullscreenSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            menuText("Fullscreen", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        section.addView(
-            settingsSwitchRow(
-                label = "Hide top bar",
-                checked = hideTopBar,
-                description = "Hide the status bar",
-            ) { checked ->
-                hideTopBar = checked
-                applyFullscreenMode()
-                refreshDisplaySizeAfterLayout()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        section.addView(
-            settingsSwitchRow(
-                label = "Hide bottom bar",
-                checked = hideBottomBar,
-                description = "Hide the navigation bar",
-            ) { checked ->
-                hideBottomBar = checked
-                applyFullscreenMode()
-                refreshDisplaySizeAfterLayout()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        return section
-    }
-
-    private fun buildSafeAreaSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            menuText("Safe area", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val summary = menuText("", 15f, MENU_ACCENT)
-        section.addView(
-            summary,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(6) },
-        )
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        buttons.addView(
-            Button(this).apply {
-                text = "Set"
-                applyMenuButtonStyle()
-                setOnClickListener { openSafeAreaEditor() }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        buttons.addView(
-            Button(this).apply {
-                text = "Reset"
-                applyMenuButtonStyle()
-                setOnClickListener { resetSafeAreaForCurrentSize() }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-            },
-        )
-        section.addView(
-            buttons,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-        section.addView(
-            settingsSwitchRow(
-                label = "Draw outside safe area",
-                checked = safeAreaDrawOutside,
-                description = "Allow CarPlay UI outside the safe area",
-            ) { checked ->
-                safeAreaDrawOutside = checked
-                updateResolutionMenu()
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(12) },
-        )
-        safeAreaSummaryView = summary
-        updateSafeAreaSummary()
-        return section
-    }
-
+    /** Black backdrop and drag surface; its title and buttons are drawn by [SafeAreaEditorChrome]. */
     private fun buildSafeAreaEditor(): View {
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -2888,334 +1449,13 @@ class CarPlayHostActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
-        overlay.addView(
-            menuText("Safe area", 24f, MENU_LABEL, bold = true).apply {
-                setPadding(dp(16), dp(12), dp(16), dp(8))
-            },
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START,
-            ),
-        )
-        val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(10), dp(16), dp(16))
-        }
-        controls.addView(
-            Button(this).apply {
-                text = "Cancel"
-                applyMenuButtonStyle()
-                setOnClickListener { closeSafeAreaEditor() }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        controls.addView(
-            Button(this).apply {
-                text = "Save"
-                applyMenuButtonStyle(MENU_BUTTON_PRIMARY)
-                setOnClickListener { saveSafeAreaEditor() }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-            },
-        )
-        overlay.addView(
-            controls,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM,
-            ),
-        )
+        padForSystemBars(overlay)
         safeAreaEditorView = editor
         return overlay
     }
 
-    private fun settingsInputRow(
-        label: String,
-        value: String,
-        password: Boolean = false,
-        numeric: Boolean = false,
-        onInputCreated: ((EditText) -> Unit)? = null,
-        onChanged: (String) -> Unit,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(
-            menuText(label, 18f, MENU_SECONDARY).apply {
-                gravity = Gravity.CENTER_VERTICAL
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        addView(
-            EditText(this@CarPlayHostActivity).apply {
-                setText(value)
-                textSize = 18f
-                setTextColor(MENU_LABEL)
-                setHintTextColor(MENU_SECONDARY)
-                backgroundTintList = ColorStateList.valueOf(MENU_ACCENT)
-                minHeight = dp(48)
-                isSingleLine = true
-                inputType = when {
-                    numeric -> InputType.TYPE_CLASS_NUMBER
-                    password -> InputType.TYPE_CLASS_TEXT or
-                        InputType.TYPE_TEXT_VARIATION_PASSWORD or
-                        InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                    else -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                }
-                addTextChangedListener(afterTextChanged(onChanged))
-                onInputCreated?.invoke(this)
-            },
-            LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f,
-            ).apply { marginStart = dp(12) },
-        )
-    }
-
-    private fun settingsSwitchRow(
-        label: String,
-        checked: Boolean,
-        description: String,
-        onSwitchCreated: (Switch) -> Unit = {},
-        onChanged: (Boolean) -> Unit,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(
-            menuText(label, 18f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        addView(
-            Switch(this@CarPlayHostActivity).apply {
-                isChecked = checked
-                contentDescription = description
-                showText = false
-                thumbTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-                )
-                trackTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT_TRACK, MENU_TRACK_OFF),
-                )
-                onSwitchCreated(this)
-                setOnCheckedChangeListener { _, value -> onChanged(value) }
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-    }
-
-    private fun afterTextChanged(onChanged: (String) -> Unit): TextWatcher =
-        object : TextWatcher {
-            override fun beforeTextChanged(
-                text: CharSequence?,
-                start: Int,
-                count: Int,
-                after: Int,
-            ) = Unit
-
-            override fun onTextChanged(
-                text: CharSequence?,
-                start: Int,
-                before: Int,
-                count: Int,
-            ) = Unit
-
-            override fun afterTextChanged(text: Editable?) {
-                onChanged(text?.toString().orEmpty())
-            }
-        }
-
-    private fun buildHotspotModeSection(): View {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        section.addView(
-            menuText("Wi-Fi session", 20f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        val group = RadioGroup(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, 0)
-        }
-        val modes = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                add(WirelessHotspotMode.WIFI_P2P to "Wi-Fi P2P (5 GHz)")
-            }
-            add(WirelessHotspotMode.LOCAL_ONLY_HOTSPOT to "LocalOnlyHotspot")
-            add(WirelessHotspotMode.MANUAL to "Manual hotspot")
-        }
-        var selectedId = View.NO_ID
-        for ((mode, label) in modes) {
-            val button = RadioButton(this).apply {
-                id = View.generateViewId()
-                text = label
-                textSize = 18f
-                setTextColor(MENU_SECONDARY)
-                buttonTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-                )
-                tag = mode
-                isChecked = wirelessHotspotMode == mode
-            }
-            if (wirelessHotspotMode == mode) selectedId = button.id
-            group.addView(
-                button,
-                RadioGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-        }
-        if (selectedId != View.NO_ID) group.check(selectedId)
-        group.setOnCheckedChangeListener { radioGroup, checkedId ->
-            val selected = radioGroup.findViewById<RadioButton>(checkedId)
-                ?.tag as? WirelessHotspotMode
-                ?: return@setOnCheckedChangeListener
-            if (wirelessHotspotMode == selected) return@setOnCheckedChangeListener
-            wirelessHotspotMode = selected
-            hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
-            updateHotspotStatusBlock()
-            updateManualHotspotFields()
-            appendLog(
-                "Wi-Fi session mode: ${hotspotModeLabel(wirelessHotspotMode)}; " +
-                    "applies when settings close",
-            )
-        }
-        section.addView(
-            group,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        val manualFields = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        manualFields.addView(
-            settingsInputRow("Hotspot SSID", manualHotspotSsid) { value ->
-                manualHotspotSsid = value
-                manualHotspotErrorView?.visibility = View.GONE
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        manualFields.addView(
-            settingsChoiceRow(
-                label = "Band",
-                options = listOf(
-                    ManualHotspotBand.AUTO to "Auto",
-                    ManualHotspotBand.GHZ_2_4 to "2.4 GHz",
-                    ManualHotspotBand.GHZ_5 to "5 GHz",
-                ),
-                selected = manualHotspotBand,
-            ) { value ->
-                manualHotspotBand = value
-                manualHotspotErrorView?.visibility = View.GONE
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-
-        manualFields.addView(
-            settingsInputRow(
-                label = "Channel (0 = auto)",
-                value = manualHotspotChannel.toString(),
-                numeric = true,
-            ) { value ->
-                manualHotspotChannel = value.toIntOrNull() ?: -1
-                manualHotspotErrorView?.visibility = View.GONE
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-
-        manualFields.addView(
-            settingsInputRow(
-                label = "Hotspot password",
-                value = manualHotspotPassphrase,
-                password = true,
-            ) { value ->
-                manualHotspotPassphrase = value
-                manualHotspotErrorView?.visibility = View.GONE
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-
-        manualFields.addView(
-            settingsChoiceRow(
-                label = "Security",
-                options = listOf(
-                    ManualHotspotSecurity.OPEN to "Open",
-                    ManualHotspotSecurity.WPA2 to "WPA2",
-                    ManualHotspotSecurity.WPA3_TRANSITION to "WPA3 transition",
-                    ManualHotspotSecurity.WPA3 to "WPA3",
-                ),
-                selected = manualHotspotSecurity,
-            ) { value ->
-                manualHotspotSecurity = value
-                manualHotspotErrorView?.visibility = View.GONE
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(10) },
-        )
-
-        val error = menuText("", 14f, MENU_DANGER).apply {
-            visibility = View.GONE
-        }
-        manualFields.addView(
-            error,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-
-        section.addView(
-            manualFields,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
-        manualHotspotFields = manualFields
-        manualHotspotErrorView = error
-        updateManualHotspotFields()
-        return section
-    }
-
     private fun updateManualHotspotFields() {
-        val visible = wirelessHotspotMode == WirelessHotspotMode.MANUAL
-        manualHotspotFields?.visibility = if (visible) View.VISIBLE else View.GONE
-        if (!visible) manualHotspotErrorView?.visibility = View.GONE
+        if (wirelessHotspotMode != WirelessHotspotMode.MANUAL) manualHotspotError = null
     }
 
     private fun validateMfiSettings(): Boolean {
@@ -3239,8 +1479,8 @@ class CarPlayHostActivity : ComponentActivity() {
             '\u0000' in localMfiPrivateKeyUri -> "Local private key URI contains U+0000"
             else -> null
         }
-        mfiErrorView?.text = error.orEmpty()
-        mfiErrorView?.visibility = if (error == null) View.GONE else View.VISIBLE
+        mfiError = error
+        if (error != null) settingsCategory = SettingsCategory.CONNECTION
         return error == null
     }
 
@@ -3264,8 +1504,8 @@ class CarPlayHostActivity : ComponentActivity() {
                 "WPA2/WPA3 password must be 8-63 characters"
             else -> null
         }
-        manualHotspotErrorView?.text = error.orEmpty()
-        manualHotspotErrorView?.visibility = if (error == null) View.GONE else View.VISIBLE
+        manualHotspotError = error
+        if (error != null) settingsCategory = SettingsCategory.CONNECTION
         return error == null
     }
 
@@ -3273,39 +1513,6 @@ class CarPlayHostActivity : ComponentActivity() {
         WirelessHotspotMode.WIFI_P2P -> "Wi-Fi P2P (5 GHz)"
         WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> "LocalOnlyHotspot"
         WirelessHotspotMode.MANUAL -> "Manual hotspot"
-    }
-
-    private fun menuText(
-        text: String,
-        sizeSp: Float,
-        color: Int,
-        bold: Boolean = false,
-    ): TextView = TextView(this).apply {
-        this.text = text
-        textSize = sizeSp
-        setTextColor(color)
-        typeface = if (bold) HandshakePanelView.MEDIUM else Typeface.DEFAULT
-        includeFontPadding = false
-    }
-
-    private fun menuRipple(shape: GradientDrawable): RippleDrawable =
-        RippleDrawable(ColorStateList.valueOf(MENU_RIPPLE), shape, null)
-
-    /** Flat rounded button in the connection panel's palette. */
-    private fun Button.applyMenuButtonStyle(fill: Int = MENU_BUTTON, textColor: Int = MENU_LABEL) {
-        isAllCaps = false
-        typeface = HandshakePanelView.MEDIUM
-        setTextColor(textColor)
-        stateListAnimator = null
-        backgroundTintList = null
-        background = menuRipple(
-            GradientDrawable().apply {
-                cornerRadius = dp(MENU_BUTTON_CORNER_DP).toFloat()
-                setColor(fill)
-            },
-        )
-        minHeight = dp(48)
-        setPadding(dp(16), 0, dp(16), 0)
     }
 
     private fun updateHotspotStatus(status: CarPlayStatus) {
@@ -3335,84 +1542,13 @@ class CarPlayHostActivity : ComponentActivity() {
         updateHotspotStatusBlock()
     }
 
-    private fun updateHotspotStatusBlock() {
-        if (!wirelessEnabled) {
-            hotspotStatusView?.text = "Wireless hotspot: off"
-            return
-        }
-        val status = hotspotStatus
-        hotspotStatusView?.text = buildString {
-            append("Wireless hotspot: ").append(status.state)
-            status.ssid?.let { append("\nSSID: ").append(it) }
-            status.backend?.let { append("\nBackend: ").append(it) }
-            status.band?.let { append("\nBand: ").append(it) }
-            status.channel?.let {
-                append("\nChannel: ").append(if (it == 0) "Auto" else it.toString())
-            }
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T> settingsChoiceRow(
-        label: String,
-        options: List<Pair<T, String>>,
-        selected: T,
-        onSelected: (T) -> Unit,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(
-            menuText(label, 18f, MENU_SECONDARY),
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        val group = RadioGroup(this@CarPlayHostActivity).apply {
-            orientation = RadioGroup.VERTICAL
-            setPadding(0, dp(4), 0, 0)
-        }
-        var selectedId = View.NO_ID
-        for ((value, text) in options) {
-            val button = RadioButton(this@CarPlayHostActivity).apply {
-                id = View.generateViewId()
-                this.text = text
-                textSize = 17f
-                setTextColor(MENU_SECONDARY)
-                buttonTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(MENU_ACCENT, MENU_SECONDARY),
-                )
-                tag = value
-                isChecked = value == selected
-            }
-            if (value == selected) selectedId = button.id
-            group.addView(
-                button,
-                RadioGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-        }
-        if (selectedId != View.NO_ID) group.check(selectedId)
-        group.setOnCheckedChangeListener { radioGroup, checkedId ->
-            val value = radioGroup.findViewById<RadioButton>(checkedId)?.tag as? T ?: return@setOnCheckedChangeListener
-            onSelected(value)
-        }
-        addView(
-            group,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-    }
+    /** The hotspot card reads [hotspotStatus] directly; kept as the single update hook. */
+    private fun updateHotspotStatusBlock() = Unit
 
     private fun updateResolutionMenu() {
-        resolutionValueView?.text = CarPlayDisplayScale.label(displayScaleTenths)
         val native = activeDisplaySize ?: currentActivitySize()
-        val resolution = if (native == null) {
-            "Handshake resolution: waiting for display"
+        val handshake = if (native == null) {
+            tr("summary.waiting_display")
         } else {
             val negotiated = mainWebDisplay.override(CarPlayDisplayScale.apply(
                 AirPlayDisplayConfig(
@@ -3423,54 +1559,53 @@ class CarPlayHostActivity : ComponentActivity() {
                 ),
                 displayScaleTenths,
             ))
-            "Handshake resolution: ${native.width} x ${native.height} -> " +
-                "${negotiated.widthPixels} x ${negotiated.heightPixels}"
+            "${native.width} × ${native.height} → ${negotiated.widthPixels} × ${negotiated.heightPixels}"
         }
         val transport = if (!hevcEnabled) {
             "H.264"
         } else {
-            "HEVC (H.265, ${if (hevcSoftwareDecoderEnabled) "software" else "hardware"})"
+            tr(if (hevcSoftwareDecoderEnabled) "summary.video.hevc_software" else "summary.video.hevc_hardware")
         }
-        val fullscreen = buildString {
-            append(if (hideTopBar) "top hidden" else "top shown")
-            append(", ")
-            append(if (hideBottomBar) "bottom hidden" else "bottom shown")
-        }
-        resolutionPreviewView?.text = buildString {
-            append(resolution).append('\n')
-            append("Identity: ").append(normalizedManufacturer()).append(" / ")
-                .append(normalizedModel()).append('\n')
-            append("OEM label: ").append(oemLabel.ifBlank { "(empty)" }).append('\n')
-            append("Frame rate: ").append(fps).append(" fps\n")
-            append("Detected maximum: ")
-                .append(maximumDetectedWidthPixels).append(" x ")
-                .append(maximumDetectedHeightPixels).append(" px\n")
-            append("Physical reference: ")
-                .append(
+        configSummary = buildList {
+            add(tr("summary.handshake") to handshake)
+            add(tr("summary.scale") to CarPlayDisplayScale.label(displayScaleTenths))
+            add(tr("summary.identity") to "${normalizedManufacturer()} / ${normalizedModel()}")
+            add(tr("summary.oem_label") to oemLabel.ifBlank { tr("summary.empty") })
+            add(tr("summary.frame_rate") to tr("unit.fps", "value" to fps))
+            add(tr("summary.detected_max") to "$maximumDetectedWidthPixels × $maximumDetectedHeightPixels px")
+            add(
+                tr("summary.physical_reference") to tr(
                     when (physicalSizeBasis) {
-                        AirPlayPhysicalSizeBasis.WIDTH -> "widest width"
-                        AirPlayPhysicalSizeBasis.HEIGHT -> "longest height"
+                        AirPlayPhysicalSizeBasis.WIDTH -> "summary.physical_reference.width"
+                        AirPlayPhysicalSizeBasis.HEIGHT -> "summary.physical_reference.height"
                     },
-                )
-                .append(" = ").append(widthPhysicalMm).append(" mm\n")
+                    "value" to widthPhysicalMm,
+                ),
+            )
             native?.let { size ->
                 val physical = resolvePhysicalSize(size)
-                append("CarPlay physical size: ")
-                    .append(physical.widthMm).append(" x ")
-                    .append(physical.heightMm).append(" mm\n")
+                add(tr("summary.physical_size") to "${physical.widthMm} × ${physical.heightMm} mm")
             }
-            append("Driving side: ").append(if (rightHandDrive) "right" else "left").append('\n')
-            append("Fullscreen: ").append(fullscreen).append('\n')
-            append("Video transport: ").append(transport).append('\n')
-            append("Location reporting: ")
-                .append(if (locationReportingEnabled) "enabled" else "disabled")
-                .append('\n')
+            add(
+                tr("summary.driving_side") to
+                    if (rightHandDrive) tr("settings.identity.driving_side.right") else tr("settings.identity.driving_side.left"),
+            )
+            add(
+                tr("summary.system_bars") to tr(
+                    "summary.system_bars.value",
+                    "top" to tr(if (hideTopBar) "summary.hidden" else "summary.shown"),
+                    "bottom" to tr(if (hideBottomBar) "summary.hidden" else "summary.shown"),
+                ),
+            )
+            add(tr("summary.video") to transport)
+            add(tr("summary.location") to tr(if (locationReportingEnabled) "summary.enabled" else "summary.disabled"))
             if (advancedAudioChannelMappingSupported) {
-                append("Audio channel mapping: ")
-                    .append(if (advancedAudioChannelMapping) "AAOS buses" else "Mobile compatible")
-                    .append('\n')
+                add(
+                    tr("summary.audio_mapping") to
+                        tr(if (advancedAudioChannelMapping) "summary.audio_mapping.aaos" else "summary.audio_mapping.mobile"),
+                )
             }
-            append(safeAreaSummary())
+            add(tr("summary.safe_area") to safeAreaSummary())
         }
     }
 
@@ -3547,7 +1682,6 @@ class CarPlayHostActivity : ComponentActivity() {
         resources.openRawResource(R.raw.placeholder_icon).use { it.readBytes() }
 
     private fun updateAirPlayIconPreview() {
-        val preview = iconPreviewView ?: return
         val custom = AirPlayPersistence.loadCustomAirPlayIconFile(this)
         var customBitmap: Bitmap? = null
         if (custom != null) {
@@ -3557,9 +1691,8 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         val bitmap = customBitmap ?: BitmapFactory.decodeResource(resources, R.raw.placeholder_icon)
-        preview.setImageBitmap(bitmap)
-        iconStatusView?.text =
-            if (customBitmap != null) "Custom 1:1 icon" else "Default placeholder icon"
+        airPlayIcon = bitmap?.asImageBitmap()
+        airPlayIconCustom = customBitmap != null
     }
 
     private fun currentActivitySize(): DisplaySize? {
@@ -3581,24 +1714,32 @@ class CarPlayHostActivity : ComponentActivity() {
         )
 
     private fun safeAreaSummary(): String {
-        val size = currentActivitySize() ?: return "Safe area: waiting for activity size"
+        val size = currentActivitySize() ?: return tr("safe_area.waiting")
         val mapping = AirPlayPersistence.loadSafeAreaRect(this, size.width, size.height)
         return if (mapping == null) {
-            "Safe area: full screen at ${size.width} x ${size.height}"
+            tr("safe_area.full", "width" to size.width, "height" to size.height)
         } else {
-            "Safe area: ${mapping.width} x ${mapping.height} at " +
-                "(${mapping.left}, ${mapping.top}) in ${size.width} x ${size.height}"
+            tr(
+                "safe_area.custom",
+                "rect_width" to mapping.width,
+                "rect_height" to mapping.height,
+                "left" to mapping.left,
+                "top" to mapping.top,
+                "width" to size.width,
+                "height" to size.height,
+            )
         }
     }
 
     private fun updateSafeAreaSummary() {
-        safeAreaSummaryView?.text = safeAreaSummary()
+        safeAreaSummaryText = safeAreaSummary()
     }
 
     private fun openSafeAreaEditor() {
         val size = currentActivitySize()
         if (size == null) {
             appendLog("Safe area editor is unavailable before display layout")
+            Toast.makeText(this, tr("safe_area.unavailable"), Toast.LENGTH_SHORT).show()
             return
         }
         val editorView = safeAreaEditorView ?: return
@@ -3607,9 +1748,9 @@ class CarPlayHostActivity : ComponentActivity() {
         safeAreaEditSize = size
         safeAreaEditorActive = true
         // Keep the current activity size; changing system bars here would remap the safe area.
-        settingsMenu?.visibility = View.GONE
         safeAreaEditor?.visibility = View.VISIBLE
         editorView.setRect(initial, size.width, size.height)
+        applySystemBarAppearance()
         appendLog(
             "Safe area editor opened for ${size.width}x${size.height}; " +
                 "drag the four boundaries",
@@ -3621,9 +1762,9 @@ class CarPlayHostActivity : ComponentActivity() {
         safeAreaEditorActive = false
         safeAreaEditSize = null
         safeAreaEditor?.visibility = View.GONE
-        settingsMenu?.visibility = View.VISIBLE
         updateSafeAreaSummary()
         updateResolutionMenu()
+        applySystemBarAppearance()
         appendLog("Safe area editor closed")
     }
 
@@ -3642,6 +1783,7 @@ class CarPlayHostActivity : ComponentActivity() {
         val size = currentActivitySize()
         if (size == null) {
             appendLog("Safe area reset is unavailable before display layout")
+            Toast.makeText(this, tr("safe_area.unavailable"), Toast.LENGTH_SHORT).show()
             return
         }
         AirPlayPersistence.clearSafeAreaRect(this, size.width, size.height)
@@ -3793,7 +1935,7 @@ class CarPlayHostActivity : ComponentActivity() {
         sink = snapshot.sink
         handshakeTimeline = snapshot.handshakeTimeline
         activeScreenStreamTypes = snapshot.activeScreenStreamTypes
-        handshakePanel?.bind(handshakeTimeline)
+        timelineRevision++
         snapshot.sink.setMediaMetricsMonitor(mediaMetricsMonitor)
         if (snapshot.width > 0 && snapshot.height > 0) {
             activeDisplaySize = DisplaySize(snapshot.width, snapshot.height)
@@ -3833,7 +1975,7 @@ class CarPlayHostActivity : ComponentActivity() {
         val controllerGeneration = restartGeneration
         handshakeTimeline = HandshakeTimeline(wirelessEnabled, System.currentTimeMillis(), lastAttemptFailure)
         lastAttemptFailure = null
-        handshakePanel?.bind(handshakeTimeline)
+        timelineRevision++
         updateDebugOverlays()
         val config = createRuntimeConfig()
         val airPlayConfig = createAirPlayConfig(size)
@@ -4059,7 +2201,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun openSettingsMenu() {
         if (menuOpen || shuttingDown.get()) return
         updateVehicleDataStatus()
-        lastVehicleDataDiagnostics = vehicleDataStatusView?.text?.toString()
+        lastVehicleDataDiagnostics = vehicleDataStatusText
         stopMicrophoneGainTest()
         settingsBaseline = captureSettingsBaseline()
         menuOpen = true
@@ -4067,7 +2209,6 @@ class CarPlayHostActivity : ComponentActivity() {
         handshakeResetInProgress = true
         startAfterHandshakeReset = false
         hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
-        updateHotspotStatusBlock()
         val generation = ++restartGeneration
         controller?.sendTouch(emptyList())
         val oldController = controller
@@ -4078,11 +2219,13 @@ class CarPlayHostActivity : ComponentActivity() {
         activeScreenStreamTypes.clear()
         setConnectionStage("Reconnecting after settings")
         gestureOverlay?.visibility = View.GONE
-        settingsMenu?.visibility = View.VISIBLE
-        webDisplayRefresh.forEach { it() }
+        settingsCategory = null
+        mfiError = null
+        manualHotspotError = null
+        resetWebDisplayDrafts()
         syncMainMediaAudioBufferControls()
-        syncMicrophoneGainControls()
-        microphoneTestButton?.isEnabled = false
+        updateAirPlayIconPreview()
+        updateSafeAreaSummary()
         updateDebugOverlays()
         clearScreenLogs()
         appendLog("Settings opened; CarPlay handshake reset")
@@ -4100,7 +2243,6 @@ class CarPlayHostActivity : ComponentActivity() {
                             return@runOnUiThread
                         }
                         handshakeResetInProgress = false
-                        microphoneTestButton?.isEnabled = menuOpen
                         if (!menuOpen && startAfterHandshakeReset) {
                             startAfterHandshakeReset = false
                             maybeStartCarPlay()
@@ -4131,7 +2273,7 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!menuOpen) return
         stopMicrophoneGainTest()
         menuOpen = false
-        settingsMenu?.visibility = View.GONE
+        settingsCategory = null
         gestureOverlay?.visibility = View.VISIBLE
         updateWebDisplayPreviews()
         updateDebugOverlays()
@@ -4205,19 +2347,19 @@ class CarPlayHostActivity : ComponentActivity() {
             matrix.setScale((rect[2] / view.width).toFloat(), (rect[3] / view.height).toFloat(), view.width / 2f, view.height / 2f)
         }
         view?.setTransform(matrix)
-        clusterPreview?.let { cluster ->
-            cluster.visibility = if (clusterWebDisplay.enabled && clusterWebDisplay.preview) View.VISIBLE else View.GONE
-            val root = contentRoot
-            if (root != null && root.width > 0 && root.height > 0) {
-                val scale = minOf(root.width.toDouble() / clusterWebDisplay.width, root.height * 0.35 / clusterWebDisplay.height)
-                val params = cluster.layoutParams
-                val width = (clusterWebDisplay.width * scale).toInt().coerceAtLeast(1)
-                val height = (clusterWebDisplay.height * scale).toInt().coerceAtLeast(1)
-                if (params.width != width || params.height != height) { params.width = width; params.height = height; cluster.layoutParams = params }
-            }
+        clusterPreviewWindow?.let { window ->
+            val shown = clusterWebDisplay.enabled && clusterWebDisplay.preview
+            window.visibility = if (shown && !clusterPreviewCollapsed) View.VISIBLE else View.GONE
+            clusterPreviewHandle?.visibility = if (shown && clusterPreviewCollapsed) View.VISIBLE else View.GONE
+            layoutClusterWindow()
         }
         currentSurface?.let { webDisplays?.preview(SCREEN_TYPE_MAIN, it) }
         clusterPreviewSurface?.let { webDisplays?.preview(SCREEN_TYPE_ALT, it) }
+    }
+
+    private fun setClusterPreviewCollapsed(collapsed: Boolean) {
+        clusterPreviewCollapsed = collapsed
+        updateWebDisplayPreviews()
     }
 
     private fun onHostTouch(view: View, event: MotionEvent): Boolean {
@@ -4346,38 +2488,57 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun setConnectionStage(message: String) {
-        handshakePanel?.setStatus(message)
+        connectionStatus = message
         updateDebugOverlays()
     }
 
+    /** Re-derives what the overlay shows; the Compose layer reads the state set here. */
     private fun updateDebugOverlays() {
-        val showLogs = debugLogsEnabled && !menuOpen
-        statusScrollView?.visibility = if (showLogs) View.VISIBLE else View.GONE
-        disconnectedSettingsButton?.visibility =
-            if (!menuOpen && SCREEN_TYPE_MAIN !in activeScreenStreamTypes) View.VISIBLE else View.GONE
-        val showPanel = !debugLogsEnabled && !menuOpen && SCREEN_TYPE_MAIN !in activeScreenStreamTypes
-        handshakePanel?.visibility = if (showPanel) View.VISIBLE else View.GONE
+        mainStreamActive = SCREEN_TYPE_MAIN in activeScreenStreamTypes
+        applySystemBarAppearance()
         updateMediaMetricsOverlay()
+    }
+
+    /** Dark bar icons only over our own light surfaces; video and the safe-area editor are dark. */
+    private fun applySystemBarAppearance() {
+        val overThemeSurface = !safeAreaEditorActive && (menuOpen || !mainStreamActive)
+        val light = overThemeSurface && !darkMode
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
     }
 
     private fun recordHandshake(controllerGeneration: Int, message: String, atMillis: Long) {
         if (controllerGeneration != restartGeneration) return
         val timeline = handshakeTimeline ?: return
-        if (timeline.accept(message, atMillis)) handshakePanel?.notifyChanged()
+        if (timeline.accept(message, atMillis)) notifyTimelineChanged()
+    }
+
+    private val publishTimeline = Runnable {
+        timelineRenderScheduled = false
+        timelineRevision++
+    }
+
+    /** Coalesces bursts of handshake records into one UI update. */
+    private fun notifyTimelineChanged() {
+        if (timelineRenderScheduled) return
+        timelineRenderScheduled = true
+        mainHandler.postDelayed(publishTimeline, TIMELINE_RENDER_INTERVAL_MILLIS)
     }
 
     private fun failHandshake(title: String, detail: String) {
         val timeline = handshakeTimeline ?: return
         timeline.fail(title, detail, System.currentTimeMillis())
         lastAttemptFailure = timeline.failure?.let { "${it.title}: ${it.detail}" }
-        handshakePanel?.notifyChanged()
+        notifyTimelineChanged()
     }
 
     private fun updateMediaMetricsOverlay() {
-        val root = contentRoot ?: return
+        val frame = mainFrame ?: return
         if (!mediaMetricsEnabled) {
             sink?.setMediaMetricsMonitor(null)
-            mediaMetricsOverlay?.let(root::removeView)
+            mediaMetricsOverlay?.let(frame::removeView)
             mediaMetricsOverlay = null
             mediaMetricsMonitor = null
             return
@@ -4394,33 +2555,25 @@ class CarPlayHostActivity : ComponentActivity() {
             fpsAxisMax = { fps.toFloat() },
         ).also {
             mediaMetricsOverlay = it
-            val settingsIndex = root.indexOfChild(settingsMenu)
-            root.addView(
-                it,
-                if (settingsIndex >= 0) settingsIndex else root.childCount,
-                mediaMetricsOverlayLayoutParams(root.width, root.height),
-            )
+            frame.addView(it, metricsLayoutParams(frame.width, frame.height))
         }
         overlay.visibility = if (!menuOpen && !safeAreaEditorActive) View.VISIBLE else View.GONE
-        updateMediaMetricsOverlayLayout(root.width, root.height)
+        updateMediaMetricsOverlayLayout(frame.width, frame.height)
     }
 
     private fun updateMediaMetricsOverlayLayout(screenWidth: Int, screenHeight: Int) {
         val overlay = mediaMetricsOverlay ?: return
-        val desired = mediaMetricsOverlayLayoutParams(screenWidth, screenHeight)
+        val desired = metricsLayoutParams(screenWidth, screenHeight)
         val current = overlay.layoutParams
         if (current.width != desired.width || current.height != desired.height) {
             overlay.layoutParams = desired
         }
     }
 
-    private fun mediaMetricsOverlayLayoutParams(
-        screenWidth: Int,
-        screenHeight: Int,
-    ): FrameLayout.LayoutParams {
+    private fun metricsLayoutParams(width: Int, height: Int): FrameLayout.LayoutParams {
         val fallback = resources.displayMetrics
-        val panelWidth = (screenWidth.takeIf { it > 0 } ?: fallback.widthPixels) / 3
-        val panelHeight = (screenHeight.takeIf { it > 0 } ?: fallback.heightPixels) / 3
+        val panelWidth = (width.takeIf { it > 0 } ?: fallback.widthPixels) / 3
+        val panelHeight = (height.takeIf { it > 0 } ?: fallback.heightPixels) / 3
         return FrameLayout.LayoutParams(panelWidth, panelHeight, Gravity.TOP or Gravity.START)
     }
 
@@ -4461,8 +2614,7 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!debugLogsEnabled || menuOpen) return
         val cutoff = nowMillis - LOG_RETENTION_MILLIS
         logLines.expireBefore(cutoff)
-        statusView?.text = logLines.renderedText()
-        scrollLogsToBottom()
+        screenLogs = logLines.snapshot()
 
         mainHandler.removeCallbacks(expireOldLogLines)
         logLines.firstTimestampMillis?.let { oldest ->
@@ -4482,35 +2634,1162 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(expireOldLogLines)
         mainHandler.removeCallbacks(renderLogLines)
         logRenderScheduled = false
-        statusView?.text = ""
-    }
-
-    private fun scrollLogsToBottom() {
-        statusScrollView?.post {
-            statusScrollView?.fullScroll(View.FOCUS_DOWN)
-        }
+        screenLogs = emptyList()
     }
 
     private fun applyFullscreenMode() {
-        val hideTop = hideTopBar
-        val hideBottom = hideBottomBar
-        WindowCompat.setDecorFitsSystemWindows(window, !(hideTop && hideBottom))
+        // Always edge-to-edge: the video pads itself by the visible bars, Compose by safeDrawing.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
-        if (hideTop) {
+        if (hideTopBar) {
             controller.hide(WindowInsetsCompat.Type.statusBars())
         } else {
             controller.show(WindowInsetsCompat.Type.statusBars())
         }
-        if (hideBottom) {
+        if (hideBottomBar) {
             controller.hide(WindowInsetsCompat.Type.navigationBars())
         } else {
             controller.show(WindowInsetsCompat.Type.navigationBars())
         }
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        applySystemBarAppearance()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    // -----------------------------------------------------------------------------------------
+    // Compose UI: home, settings (two levels) and safe-area editor chrome
+    // -----------------------------------------------------------------------------------------
+
+    private enum class SettingsCategory(val key: String, @param:DrawableRes val icon: Int) {
+        CONNECTION("connection", R.drawable.ic_ms_link),
+        VEHICLE("vehicle", R.drawable.ic_ms_directions_car),
+        AUDIO("audio", R.drawable.ic_ms_graphic_eq),
+        DISPLAY("display", R.drawable.ic_ms_display_settings),
+        WEB("web", R.drawable.ic_ms_cast),
+        IDENTITY("identity", R.drawable.ic_ms_badge),
+        WINDOW("window", R.drawable.ic_ms_fullscreen),
+        DIAGNOSTICS("diagnostics", R.drawable.ic_ms_bug_report),
+        ;
+
+        val title: String get() = tr("settings.category.$key")
+        val summary: String get() = tr("settings.category.$key.summary")
+    }
+
+    private data class WebDisplayDraft(val width: String, val height: String, val error: Boolean = false)
+
+    @Composable
+    private fun HostOverlay() {
+        Box(Modifier.fillMaxSize()) {
+            when {
+                safeAreaEditorActive -> SafeAreaEditorChrome()
+                menuOpen -> SettingsScreen()
+                !mainStreamActive -> HomeScreen(
+                    timeline = handshakeTimeline,
+                    revision = timelineRevision,
+                    status = connectionStatus,
+                    wireless = handshakeTimeline?.wireless ?: wirelessEnabled,
+                    debugLogs = debugLogsEnabled,
+                    logLines = screenLogs,
+                    onOpenSettings = { openSettingsMenu() },
+                )
+                debugLogsEnabled -> StreamingLogOverlay(screenLogs, Modifier.align(Alignment.BottomStart))
+            }
+        }
+    }
+
+    @Composable
+    private fun SettingsScreen() {
+        val scheme = MaterialTheme.colorScheme
+        M3Surface(Modifier.fillMaxSize(), color = scheme.surface, contentColor = scheme.onSurface) {
+            BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                val twoPane = maxWidth >= TWO_PANE_MIN_WIDTH
+                SideEffect { settingsTwoPane = twoPane }
+                if (twoPane) {
+                    val selected = settingsCategory ?: SettingsCategory.CONNECTION
+                    Row(Modifier.fillMaxSize()) {
+                        Column(Modifier.width(CATEGORY_PANE_WIDTH).fillMaxHeight()) {
+                            SmallTopBar(
+                                title = tr("settings.title"),
+                                navigation = {
+                                    LvIconButton(R.drawable.ic_ms_close, tr("settings.discard"), { cancelSettingsEdits() })
+                                },
+                            )
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = Space.s3),
+                                verticalArrangement = Arrangement.spacedBy(Space.s1),
+                            ) {
+                                SettingsCategory.entries.forEach { category ->
+                                    ListRow(
+                                        headline = category.title,
+                                        support = category.summary,
+                                        leadingIcon = category.icon,
+                                        selected = category == selected,
+                                        onClick = { settingsCategory = category },
+                                    )
+                                }
+                            }
+                            SettingsActions(stacked = true)
+                        }
+                        M3Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(top = Space.s3, end = Space.s3, bottom = Space.s3),
+                            shape = RoundedCornerShape(Radius.xl),
+                            color = scheme.surfaceContainerLow,
+                        ) {
+                            ProvideGroupColor(scheme.surfaceContainerHigh) {
+                                Column(Modifier.fillMaxSize()) {
+                                    SmallTopBar(title = selected.title)
+                                    CategoryContent(selected, Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val current = settingsCategory
+                    Column(Modifier.fillMaxSize()) {
+                        if (current == null) {
+                            LargeTopBar(
+                                title = tr("settings.title"),
+                                navigation = {
+                                    LvIconButton(R.drawable.ic_ms_close, tr("settings.discard"), { cancelSettingsEdits() })
+                                },
+                            )
+                            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                                SettingsCategory.entries.forEach { category ->
+                                    ListRow(
+                                        headline = category.title,
+                                        support = category.summary,
+                                        leadingIcon = category.icon,
+                                        leadingBox = true,
+                                        onClick = { settingsCategory = category },
+                                        trailing = { TrailingValue(null) },
+                                    )
+                                }
+                                Spacer(Modifier.height(Space.s4))
+                            }
+                        } else {
+                            SmallTopBar(
+                                title = current.title,
+                                navigation = {
+                                    LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), { settingsCategory = null })
+                                },
+                            )
+                            CategoryContent(current, Modifier.weight(1f))
+                        }
+                        SettingsActions(stacked = false)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Save is the one filled action per screen; leaving the app is a separate, quieter action. */
+    @Composable
+    private fun SettingsActions(stacked: Boolean) {
+        val scheme = MaterialTheme.colorScheme
+        val save: @Composable (Modifier) -> Unit = { modifier ->
+            Button(
+                onClick = { saveSettingsAndReconnect() },
+                modifier = modifier.heightIn(min = 48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = scheme.primary, contentColor = scheme.onPrimary),
+            ) {
+                LvIcon(R.drawable.ic_ms_refresh, size = 18.dp)
+                Spacer(Modifier.width(Space.s2))
+                Text(tr("settings.save"), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        val exit: @Composable (Modifier) -> Unit = { modifier ->
+            TextButton(
+                onClick = { exitApplication() },
+                modifier = modifier.heightIn(min = 48.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = scheme.error),
+            ) {
+                LvIcon(R.drawable.ic_ms_power_settings_new, size = 18.dp)
+                Spacer(Modifier.width(Space.s2))
+                Text(tr("settings.exit"), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        if (stacked) {
+            Column(
+                Modifier.fillMaxWidth().padding(Space.s4),
+                verticalArrangement = Arrangement.spacedBy(Space.s2),
+            ) {
+                save(Modifier.fillMaxWidth())
+                exit(Modifier.fillMaxWidth())
+            }
+        } else {
+            M3Surface(color = scheme.surfaceContainer) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = Space.s4, vertical = Space.s3),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.s3),
+                ) {
+                    exit(Modifier)
+                    Spacer(Modifier.weight(1f))
+                    save(Modifier)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun CategoryContent(category: SettingsCategory, modifier: Modifier) {
+        key(category) {
+            Column(
+                modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = Space.s6),
+            ) {
+                when (category) {
+                    SettingsCategory.CONNECTION -> ConnectionSettings()
+                    SettingsCategory.VEHICLE -> VehicleSettings()
+                    SettingsCategory.AUDIO -> AudioSettings()
+                    SettingsCategory.DISPLAY -> DisplaySettings()
+                    SettingsCategory.WEB -> WebDisplaySettings()
+                    SettingsCategory.IDENTITY -> IdentitySettings()
+                    SettingsCategory.WINDOW -> WindowSettings()
+                    SettingsCategory.DIAGNOSTICS -> DiagnosticsSettings()
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ConnectionSettings() {
+        SectionHeader(tr("settings.connection.mfi"))
+        SettingsGroup {
+            row {
+                SelectRow(
+                    title = tr("settings.mfi.target"),
+                    options = listOf(
+                        MfiTarget.USB_CH341 to tr("settings.mfi.target.ch341"),
+                        MfiTarget.I2C to tr("settings.mfi.target.i2c"),
+                        MfiTarget.REMOTE to tr("settings.mfi.target.remote"),
+                        MfiTarget.LOCAL_FILES to tr("settings.mfi.target.local"),
+                    ),
+                    selected = mfiTarget,
+                    onSelected = ::onMfiTargetSelected,
+                )
+            }
+            when (mfiTarget) {
+                MfiTarget.USB_CH341 -> row { HelpText(tr("settings.mfi.ch341_help")) }
+                MfiTarget.I2C -> row {
+                    FieldRow(
+                        label = tr("settings.mfi.i2c_path"),
+                        value = mfiI2cPath,
+                        onValueChange = {
+                            mfiI2cPath = it
+                            mfiError = null
+                        },
+                        help = tr("settings.mfi.i2c_help"),
+                        monospace = true,
+                    )
+                }
+                MfiTarget.REMOTE -> {
+                    row {
+                        FieldRow(
+                            label = tr("settings.mfi.server"),
+                            value = remoteMfiServer,
+                            onValueChange = {
+                                remoteMfiServer = it
+                                mfiError = null
+                            },
+                            monospace = true,
+                        )
+                    }
+                    row {
+                        FieldRow(
+                            label = tr("settings.mfi.token"),
+                            value = remoteMfiToken,
+                            onValueChange = { remoteMfiToken = it },
+                            password = true,
+                            help = tr("settings.mfi.remote_help"),
+                        )
+                    }
+                }
+                MfiTarget.LOCAL_FILES -> {
+                    row {
+                        DocumentRow(tr("settings.mfi.certificate"), localMfiCertificateUri) {
+                            externalActivityInProgress = true
+                            localMfiCertificatePicker.launch(arrayOf("*/*"))
+                        }
+                    }
+                    row {
+                        DocumentRow(tr("settings.mfi.private_key"), localMfiPrivateKeyUri) {
+                            externalActivityInProgress = true
+                            localMfiPrivateKeyPicker.launch(arrayOf("*/*"))
+                        }
+                    }
+                    row { HelpText(tr("settings.mfi.local_help")) }
+                }
+            }
+        }
+        mfiError?.let {
+            Spacer(Modifier.height(Space.s3))
+            Banner(BannerKind.ERR, tr("settings.mfi.error_title"), body = it)
+        }
+
+        SectionHeader(tr("settings.connection.transport"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.wireless"),
+                    support = tr("settings.wireless.support"),
+                    checked = wirelessEnabled,
+                    onCheckedChange = ::onWirelessChanged,
+                )
+            }
+            row {
+                SelectRow(
+                    title = tr("settings.wifi_session"),
+                    options = buildList {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            add(WirelessHotspotMode.WIFI_P2P to tr("settings.wifi_session.p2p"))
+                        }
+                        add(WirelessHotspotMode.LOCAL_ONLY_HOTSPOT to tr("settings.wifi_session.local_only"))
+                        add(WirelessHotspotMode.MANUAL to tr("settings.wifi_session.manual"))
+                    },
+                    selected = wirelessHotspotMode,
+                    onSelected = ::onHotspotModeSelected,
+                )
+            }
+        }
+
+        if (wirelessHotspotMode == WirelessHotspotMode.MANUAL) {
+            SectionHeader(tr("settings.manual_hotspot"))
+            SettingsGroup {
+                row {
+                    FieldRow(
+                        label = tr("settings.manual_hotspot.ssid"),
+                        value = manualHotspotSsid,
+                        onValueChange = {
+                            manualHotspotSsid = it
+                            manualHotspotError = null
+                        },
+                    )
+                }
+                row {
+                    SegmentedRow(
+                        title = tr("settings.manual_hotspot.band"),
+                        options = listOf(
+                            ManualHotspotBand.AUTO to tr("settings.manual_hotspot.band.auto"),
+                            ManualHotspotBand.GHZ_2_4 to "2.4 GHz",
+                            ManualHotspotBand.GHZ_5 to "5 GHz",
+                        ),
+                        selected = manualHotspotBand,
+                        onSelected = {
+                            manualHotspotBand = it
+                            manualHotspotError = null
+                        },
+                    )
+                }
+                row {
+                    FieldRow(
+                        label = tr("settings.manual_hotspot.channel"),
+                        value = manualHotspotChannelText,
+                        onValueChange = { value ->
+                            manualHotspotChannelText = value
+                            manualHotspotChannel = value.toIntOrNull() ?: -1
+                            manualHotspotError = null
+                        },
+                        numeric = true,
+                        help = tr("settings.manual_hotspot.channel.help"),
+                    )
+                }
+                row {
+                    SelectRow(
+                        title = tr("settings.manual_hotspot.security"),
+                        options = listOf(
+                            ManualHotspotSecurity.OPEN to tr("settings.manual_hotspot.security.open"),
+                            ManualHotspotSecurity.WPA2 to "WPA2",
+                            ManualHotspotSecurity.WPA3_TRANSITION to tr("settings.manual_hotspot.security.wpa3_transition"),
+                            ManualHotspotSecurity.WPA3 to "WPA3",
+                        ),
+                        selected = manualHotspotSecurity,
+                        onSelected = {
+                            manualHotspotSecurity = it
+                            manualHotspotError = null
+                        },
+                    )
+                }
+                row {
+                    FieldRow(
+                        label = tr("settings.manual_hotspot.password"),
+                        value = manualHotspotPassphrase,
+                        onValueChange = {
+                            manualHotspotPassphrase = it
+                            manualHotspotError = null
+                        },
+                        password = true,
+                    )
+                }
+            }
+            manualHotspotError?.let {
+                Spacer(Modifier.height(Space.s3))
+                Banner(BannerKind.ERR, tr("settings.manual_hotspot.error_title"), body = it)
+            }
+        }
+
+        SectionHeader(tr("settings.hotspot_status"))
+        SettingsGroup { row { HotspotStatusBlock() } }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Spacer(Modifier.height(Space.s4))
+            Banner(BannerKind.INFO, tr("settings.compat.title"), body = tr("settings.compat.p2p"))
+        }
+    }
+
+    @Composable
+    private fun HotspotStatusBlock() {
+        val status = hotspotStatus
+        val (kind, icon) = when {
+            !wirelessEnabled -> PillKind.IDLE to R.drawable.ic_ms_radio_button_unchecked
+            status.state == "Error" -> PillKind.ERR to R.drawable.ic_ms_error_fill
+            status.state in setOf("Ready", "Running", "Active") -> PillKind.OK to R.drawable.ic_ms_check_circle_fill
+            status.state in setOf("off", "stopped") -> PillKind.IDLE to R.drawable.ic_ms_radio_button_unchecked
+            else -> PillKind.INFO to R.drawable.ic_ms_pending
+        }
+        val stateKey = if (!wirelessEnabled) "off" else status.state
+        val label = trOr("hotspot.state.${stateKey.lowercase(Locale.ROOT).replace(' ', '_')}", stateKey)
+        Column(Modifier.fillMaxWidth().padding(top = Space.s3)) {
+            StatusPill(kind, icon, label, Modifier.padding(horizontal = Space.s4))
+            if (wirelessEnabled) {
+                val entries = buildList {
+                    status.ssid?.let { add(tr("hotspot.ssid") to it) }
+                    status.backend?.let { add(tr("hotspot.backend") to it) }
+                    status.band?.let { add(tr("hotspot.band") to it) }
+                    status.channel?.let {
+                        add(tr("hotspot.channel") to if (it == 0) tr("settings.manual_hotspot.band.auto") else it.toString())
+                    }
+                }
+                if (entries.isNotEmpty()) KeyValueList(entries) else Spacer(Modifier.height(Space.s3))
+            } else {
+                HelpText(tr("hotspot.off_help"))
+            }
+        }
+    }
+
+    @Composable
+    private fun DocumentRow(label: String, uri: String, onChoose: () -> Unit) {
+        val name = remember(uri) { localMfiDocumentLabel(uri) }
+        ListRow(
+            headline = label,
+            support = name,
+            leadingIcon = R.drawable.ic_ms_description,
+            trailing = {
+                FilledTonalButton(onClick = onChoose) {
+                    Text(tr("common.choose"), style = MaterialTheme.typography.labelLarge)
+                }
+            },
+        )
+    }
+
+    @Composable
+    private fun VehicleSettings() {
+        SectionHeader(tr("settings.vehicle.location"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.vehicle.report_location"),
+                    support = tr("settings.vehicle.report_location.support"),
+                    checked = locationReportingEnabled,
+                    onCheckedChange = ::onLocationReportingChanged,
+                )
+            }
+        }
+
+        SectionHeader(tr("settings.vehicle.properties"))
+        val platforms = com.shilapi.xcertplay.vehicle.VehiclePlatform.entries
+        SettingsGroup {
+            row {
+                SelectRow(
+                    title = tr("settings.vehicle.source"),
+                    options = listOf(platforms[0] to tr("settings.vehicle.source.aaos")),
+                    selected = vehicleDataConfig.platform,
+                    onSelected = { platform ->
+                        vehicleDataConfig = vehicleDataConfig.copy(platform = platform)
+                        updateVehicleDataStatus()
+                    },
+                )
+            }
+            VehicleDataFeature.entries.forEach { feature ->
+                row {
+                    if (!feature.sourceImplemented) {
+                        ListRow(
+                            headline = feature.label,
+                            support = tr("settings.vehicle.feature_unavailable", "reason" to feature.description),
+                            enabled = false,
+                        )
+                    } else {
+                        SwitchRow(
+                            title = feature.label,
+                            support = feature.description,
+                            checked = vehicleDataConfig.isEnabled(feature),
+                            onCheckedChange = { onVehicleFeatureChanged(feature, it) },
+                        )
+                    }
+                }
+            }
+        }
+        HelpText(tr("settings.vehicle.applies_on_close"))
+
+        SectionHeader(tr("settings.vehicle.diagnostics"))
+        SettingsGroup {
+            row {
+                Text(
+                    vehicleDataStatusText,
+                    style = LavenderCode.medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth().padding(Space.s4),
+                )
+            }
+            row {
+                FlowButtons {
+                    FilledTonalButton(onClick = { updateVehicleDataStatus() }) {
+                        LvIcon(R.drawable.ic_ms_refresh, size = 18.dp)
+                        Spacer(Modifier.width(Space.s2))
+                        Text(tr("settings.vehicle.refresh"), style = MaterialTheme.typography.labelLarge)
+                    }
+                    if (canRequestVehicleSpeedPermission()) {
+                        OutlinedButton(onClick = { requestVehicleSpeedPermission() }) {
+                            LvIcon(R.drawable.ic_ms_speed, size = 18.dp)
+                            Spacer(Modifier.width(Space.s2))
+                            Text(tr("settings.vehicle.grant_speed"), style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+        HelpText(tr("settings.vehicle.no_adapter"))
+        HelpText(tr("settings.vehicle.requirements"))
+    }
+
+    @OptIn(ExperimentalLayoutApi::class)
+    @Composable
+    private fun FlowButtons(content: @Composable () -> Unit) {
+        FlowRow(
+            Modifier.fillMaxWidth().padding(horizontal = Space.s4, vertical = Space.s3),
+            horizontalArrangement = Arrangement.spacedBy(Space.s2),
+            verticalArrangement = Arrangement.spacedBy(Space.s2),
+        ) { content() }
+    }
+
+    @Composable
+    private fun AudioSettings() {
+        SectionHeader(tr("settings.audio.playback"))
+        val bufferValues = remember {
+            (MainMediaAudioBuffer.MIN_DURATION_MS..MainMediaAudioBuffer.MAX_DURATION_MS step
+                MainMediaAudioBuffer.STEP_DURATION_MS).toList()
+        }
+        SettingsGroup {
+            row {
+                SliderRow(
+                    title = tr("settings.audio.buffer"),
+                    support = tr("settings.audio.buffer.support"),
+                    valueLabel = mainMediaAudioBufferLabel(mainMediaAudioBufferDurationMs),
+                    index = bufferValues.indexOf(mainMediaAudioBufferDurationMs).coerceAtLeast(0),
+                    count = bufferValues.size,
+                    onIndexChange = { mainMediaAudioBufferDurationMs = bufferValues[it] },
+                )
+            }
+            if (advancedAudioChannelMappingSupported) {
+                row {
+                    SwitchRow(
+                        title = tr("settings.audio.channel_mapping"),
+                        support = tr("settings.audio.channel_mapping.support"),
+                        checked = advancedAudioChannelMapping,
+                        onCheckedChange = ::onAdvancedAudioChannelMappingChanged,
+                    )
+                }
+            }
+        }
+
+        SectionHeader(tr("settings.audio.microphone"))
+        SettingsGroup {
+            row {
+                SliderRow(
+                    title = tr("settings.audio.mic_gain"),
+                    support = tr("settings.audio.mic_gain.support"),
+                    valueLabel = microphoneGainLabel(microphoneGainPercent),
+                    index = MicrophoneGain.stepForPercent(microphoneGainPercent),
+                    count = MicrophoneGain.STEP_COUNT,
+                    onIndexChange = { microphoneGainPercent = MicrophoneGain.percentForStep(it) },
+                )
+            }
+            row { MicrophoneTestRow() }
+        }
+    }
+
+    @Composable
+    private fun MicrophoneTestRow() {
+        val scheme = MaterialTheme.colorScheme
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = Space.s4, vertical = Space.s3),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.s4),
+        ) {
+            LvIcon(R.drawable.ic_ms_mic, tint = if (micTestRunning) scheme.primary else scheme.onSurfaceVariant)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
+                Row {
+                    Text(tr("settings.audio.peak_level"), style = MaterialTheme.typography.bodyMedium, color = scheme.onSurface)
+                    Spacer(Modifier.weight(1f))
+                    Text(micLevelText, style = MaterialTheme.typography.labelMedium.tabular, color = scheme.onSurfaceVariant)
+                }
+                LinearMeter(micPeakPercent / 100f)
+            }
+            FilledTonalButton(
+                onClick = { if (microphoneLevelMonitor?.isRunning == true) stopMicrophoneGainTest() else startMicrophoneGainTest() },
+                enabled = menuOpen && !handshakeResetInProgress,
+            ) {
+                Text(
+                    if (micTestRunning) tr("settings.audio.stop") else tr("settings.audio.test"),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun DisplaySettings() {
+        SectionHeader(tr("settings.display.resolution"))
+        val fpsValues = remember {
+            (AirPlayDisplaySettings.MIN_FPS..AirPlayDisplaySettings.MAX_FPS step AirPlayDisplaySettings.FPS_STEP).toList()
+        }
+        val lengthValues = remember {
+            (AirPlayDisplaySettings.MIN_WIDTH_PHYSICAL_MM..AirPlayDisplaySettings.MAX_WIDTH_PHYSICAL_MM step
+                AirPlayDisplaySettings.WIDTH_PHYSICAL_MM_STEP).toList()
+        }
+        SettingsGroup {
+            row {
+                SliderRow(
+                    title = tr("settings.display.scale"),
+                    support = tr("settings.display.scale.support"),
+                    valueLabel = CarPlayDisplayScale.label(displayScaleTenths),
+                    index = displayScaleTenths - CarPlayDisplayScale.MIN_TENTHS,
+                    count = CarPlayDisplayScale.MAX_TENTHS - CarPlayDisplayScale.MIN_TENTHS + 1,
+                    onIndexChange = {
+                        displayScaleTenths = CarPlayDisplayScale.sanitize(CarPlayDisplayScale.MIN_TENTHS + it)
+                        updateResolutionMenu()
+                    },
+                    startLabel = CarPlayDisplayScale.label(CarPlayDisplayScale.MIN_TENTHS),
+                    endLabel = CarPlayDisplayScale.label(CarPlayDisplayScale.MAX_TENTHS),
+                )
+            }
+            row {
+                SliderRow(
+                    title = tr("settings.display.fps"),
+                    valueLabel = tr("unit.fps", "value" to fps),
+                    index = fpsValues.indexOf(fps).coerceAtLeast(0),
+                    count = fpsValues.size,
+                    onIndexChange = {
+                        fps = fpsValues[it]
+                        updateResolutionMenu()
+                    },
+                )
+            }
+            row {
+                SegmentedRow(
+                    title = tr("settings.display.physical_basis"),
+                    options = listOf(
+                        AirPlayPhysicalSizeBasis.WIDTH to tr("settings.display.physical_basis.width"),
+                        AirPlayPhysicalSizeBasis.HEIGHT to tr("settings.display.physical_basis.height"),
+                    ),
+                    selected = physicalSizeBasis,
+                    onSelected = {
+                        physicalSizeBasis = it
+                        updateResolutionMenu()
+                    },
+                )
+            }
+            row {
+                SliderRow(
+                    title = tr("settings.display.physical_length"),
+                    valueLabel = tr("unit.mm", "value" to widthPhysicalMm),
+                    index = lengthValues.indexOf(widthPhysicalMm).coerceAtLeast(0),
+                    count = lengthValues.size,
+                    onIndexChange = {
+                        widthPhysicalMm = lengthValues[it]
+                        updateResolutionMenu()
+                    },
+                )
+            }
+        }
+
+        SectionHeader(tr("settings.display.video"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.display.hevc"),
+                    support = tr("settings.display.hevc.support"),
+                    checked = hevcEnabled,
+                    onCheckedChange = ::onHevcChanged,
+                )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                row {
+                    SwitchRow(
+                        title = tr("settings.display.hevc_software"),
+                        support = tr("settings.display.hevc_software.support"),
+                        checked = hevcSoftwareDecoderEnabled,
+                        enabled = hevcEnabled,
+                        onCheckedChange = ::onHevcSoftwareDecoderChanged,
+                    )
+                }
+            }
+        }
+
+        SectionHeader(tr("settings.display.safe_area"))
+        SettingsGroup {
+            row {
+                ListRow(
+                    headline = tr("settings.display.safe_area.current"),
+                    support = safeAreaSummaryText,
+                    leadingIcon = R.drawable.ic_ms_crop_free,
+                )
+            }
+            row {
+                FlowButtons {
+                    FilledTonalButton(onClick = { openSafeAreaEditor() }) {
+                        Text(tr("settings.display.safe_area.edit"), style = MaterialTheme.typography.labelLarge)
+                    }
+                    OutlinedButton(onClick = { resetSafeAreaForCurrentSize() }) {
+                        LvIcon(R.drawable.ic_ms_restart_alt, size = 18.dp)
+                        Spacer(Modifier.width(Space.s2))
+                        Text(tr("settings.display.safe_area.reset"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+            row {
+                SwitchRow(
+                    title = tr("settings.display.safe_area.draw_outside"),
+                    support = tr("settings.display.safe_area.draw_outside.support"),
+                    checked = safeAreaDrawOutside,
+                    onCheckedChange = {
+                        safeAreaDrawOutside = it
+                        updateResolutionMenu()
+                    },
+                )
+            }
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Spacer(Modifier.height(Space.s4))
+            Banner(BannerKind.INFO, tr("settings.compat.title"), body = tr("settings.compat.hevc"))
+        }
+    }
+
+    @Composable
+    private fun WebDisplaySettings() {
+        for (type in listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT)) {
+            val config = webDisplayConfig(type)
+            val draft = webDisplayDrafts[type] ?: WebDisplayDraft(config.width.toString(), config.height.toString())
+            SectionHeader(if (type == SCREEN_TYPE_MAIN) tr("settings.web.main") else tr("settings.web.instrument"))
+            SettingsGroup {
+                row {
+                    SwitchRow(
+                        title = tr("settings.web.enabled"),
+                        support = tr("settings.web.enabled.support"),
+                        checked = config.enabled,
+                        onCheckedChange = { setWebDisplayConfig(type, webDisplayConfig(type).copy(enabled = it)) },
+                    )
+                }
+                if (config.enabled) {
+                    row {
+                        Column {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                FieldRow(
+                                    label = tr("settings.web.width"),
+                                    value = draft.width,
+                                    onValueChange = { webDisplayDrafts[type] = draft.copy(width = it, error = false) },
+                                    numeric = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text("×", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                FieldRow(
+                                    label = tr("settings.web.height"),
+                                    value = draft.height,
+                                    onValueChange = { webDisplayDrafts[type] = draft.copy(height = it, error = false) },
+                                    numeric = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Text(
+                                if (draft.error) tr("settings.web.dimension_error") else tr("settings.web.dimension_help"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (draft.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = Space.s8, end = Space.s4, bottom = Space.s3),
+                            )
+                        }
+                    }
+                    row {
+                        SwitchRow(
+                            title = tr("settings.web.preview"),
+                            support = tr("settings.web.preview.support"),
+                            checked = config.preview,
+                            onCheckedChange = { setWebDisplayConfig(type, webDisplayConfig(type).copy(preview = it)) },
+                        )
+                    }
+                    row {
+                        Column(Modifier.fillMaxWidth().padding(Space.s4), verticalArrangement = Arrangement.spacedBy(Space.s1)) {
+                            Text(
+                                tr("settings.web.address"),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            SelectionContainer {
+                                Text(
+                                    webDisplayAddresses[type].orEmpty().ifEmpty { tr("settings.web.no_network") },
+                                    style = LavenderCode.large,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        HelpText(tr("settings.web.https_note"), Modifier.padding(top = Space.s2))
+        HelpText(tr("settings.web.apply_note"))
+    }
+
+    @Composable
+    private fun IdentitySettings() {
+        SectionHeader(tr("settings.identity.vehicle"))
+        SettingsGroup {
+            row {
+                FieldRow(tr("settings.identity.manufacturer"), manufacturer, {
+                    manufacturer = it
+                    updateResolutionMenu()
+                })
+            }
+            row {
+                FieldRow(tr("settings.identity.model"), model, {
+                    model = it
+                    updateResolutionMenu()
+                })
+            }
+            row {
+                FieldRow(tr("settings.identity.oem_label"), oemLabel, {
+                    oemLabel = it
+                    updateResolutionMenu()
+                })
+            }
+        }
+
+        SectionHeader(tr("settings.identity.appearance"))
+        SettingsGroup {
+            row { AirPlayIconRow() }
+            row {
+                SegmentedRow(
+                    title = tr("settings.identity.driving_side"),
+                    options = listOf(false to tr("settings.identity.driving_side.left"), true to tr("settings.identity.driving_side.right")),
+                    selected = rightHandDrive,
+                    onSelected = {
+                        rightHandDrive = it
+                        updateResolutionMenu()
+                    },
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun AirPlayIconRow() {
+        val scheme = MaterialTheme.colorScheme
+        Row(
+            Modifier.fillMaxWidth().padding(Space.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.s4),
+        ) {
+            Box(
+                Modifier.size(72.dp).clip(RoundedCornerShape(Radius.md)).background(scheme.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) {
+                val icon = airPlayIcon
+                if (icon != null) {
+                    Image(
+                        bitmap = icon,
+                        contentDescription = tr("settings.identity.icon"),
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    LvIcon(R.drawable.ic_ms_image, tint = scheme.onSurfaceVariant)
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s2)) {
+                Text(tr("settings.identity.icon"), style = MaterialTheme.typography.bodyLarge, color = scheme.onSurface)
+                Text(
+                    if (airPlayIconCustom) tr("settings.identity.icon.custom") else tr("settings.identity.icon.default"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = scheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s2)) {
+                    FilledTonalButton(onClick = {
+                        externalActivityInProgress = true
+                        imagePicker.launch("image/*")
+                    }) { Text(tr("settings.identity.icon.choose"), style = MaterialTheme.typography.labelLarge) }
+                    TextButton(
+                        onClick = {
+                            AirPlayPersistence.clearCustomAirPlayIcon(this@CarPlayHostActivity)
+                            updateAirPlayIconPreview()
+                        },
+                        enabled = airPlayIconCustom,
+                    ) { Text(tr("settings.identity.icon.reset"), style = MaterialTheme.typography.labelLarge) }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun WindowSettings() {
+        SectionHeader(tr("settings.window.startup"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.window.auto_start"),
+                    support = tr("settings.window.auto_start.support"),
+                    checked = autoStartOnBoot,
+                    onCheckedChange = {
+                        autoStartOnBoot = it
+                        appendLog("Boot auto-start ${if (it) "enabled" else "disabled"}")
+                    },
+                )
+            }
+        }
+        SectionHeader(tr("settings.window.fullscreen"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.window.hide_top"),
+                    support = tr("settings.window.hide_top.support"),
+                    checked = hideTopBar,
+                    onCheckedChange = {
+                        hideTopBar = it
+                        applyFullscreenMode()
+                        refreshDisplaySizeAfterLayout()
+                    },
+                )
+            }
+            row {
+                SwitchRow(
+                    title = tr("settings.window.hide_bottom"),
+                    support = tr("settings.window.hide_bottom.support"),
+                    checked = hideBottomBar,
+                    onCheckedChange = {
+                        hideBottomBar = it
+                        applyFullscreenMode()
+                        refreshDisplaySizeAfterLayout()
+                    },
+                )
+            }
+        }
+        SectionHeader(tr("settings.window.gestures"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.window.edge_gesture"),
+                    support = tr("settings.window.edge_gesture.support"),
+                    checked = moreGesturesToSettings,
+                    onCheckedChange = { moreGesturesToSettings = it },
+                )
+            }
+        }
+        HelpText(tr("settings.window.three_finger_help"))
+    }
+
+    @Composable
+    private fun DiagnosticsSettings() {
+        SectionHeader(tr("settings.diagnostics.monitoring"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.diagnostics.latency"),
+                    support = tr("settings.diagnostics.latency.support"),
+                    checked = mediaMetricsEnabled,
+                    onCheckedChange = ::onMediaMetricsChanged,
+                )
+            }
+            row {
+                SwitchRow(
+                    title = tr("settings.diagnostics.debug_logs"),
+                    support = tr("settings.diagnostics.debug_logs.support"),
+                    checked = debugLogsEnabled,
+                    onCheckedChange = ::onDebugLogsChanged,
+                )
+            }
+        }
+        SectionHeader(tr("settings.diagnostics.capture"))
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.diagnostics.audio_capture"),
+                    support = tr("settings.diagnostics.audio_capture.support"),
+                    checked = audioPacketCaptureEnabled,
+                    onCheckedChange = ::onAudioPacketCaptureChanged,
+                )
+            }
+            row {
+                SwitchRow(
+                    title = tr("settings.diagnostics.raw_video"),
+                    support = tr("settings.diagnostics.raw_video.support"),
+                    checked = videoFrameLogsEnabled,
+                    onCheckedChange = ::onVideoFrameLogsChanged,
+                )
+            }
+        }
+        SectionHeader(tr("settings.diagnostics.system"))
+        SettingsGroup {
+            row {
+                ListRow(
+                    headline = tr("settings.diagnostics.bluetooth"),
+                    support = tr("settings.diagnostics.bluetooth.support"),
+                    leadingIcon = R.drawable.ic_ms_bluetooth,
+                    onClick = { openSystemBluetoothSettings() },
+                    trailing = { LvIcon(R.drawable.ic_ms_open_in_new, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                )
+            }
+        }
+        SectionHeader(tr("settings.diagnostics.summary"))
+        SettingsGroup { row { KeyValueList(configSummary) } }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Spacer(Modifier.height(Space.s4))
+            Banner(
+                BannerKind.INFO,
+                tr("settings.compat.title"),
+                body = tr("settings.compat.p2p") + "\n" + tr("settings.compat.hevc"),
+            )
+        }
+    }
+
+    /** Title and Save/Cancel over the safe-area editor; the editor view below takes the drags. */
+    @Composable
+    private fun SafeAreaEditorChrome() {
+        val scheme = MaterialTheme.colorScheme
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(Space.s4)) {
+            M3Surface(
+                modifier = Modifier.align(Alignment.TopStart),
+                shape = RoundedCornerShape(Radius.lg),
+                color = scheme.surfaceContainerHigh,
+            ) {
+                Column(Modifier.padding(horizontal = Space.s4, vertical = Space.s3)) {
+                    Text(tr("safe_area.editor.title"), style = MaterialTheme.typography.titleMedium, color = scheme.onSurface)
+                    Text(tr("safe_area.editor.help"), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+                }
+            }
+            M3Surface(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                shape = RoundedCornerShape(Radius.xl),
+                color = scheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    Modifier.padding(Space.s3),
+                    horizontalArrangement = Arrangement.spacedBy(Space.s3),
+                ) {
+                    TextButton(onClick = { closeSafeAreaEditor() }) {
+                        Text(tr("common.cancel"), style = MaterialTheme.typography.labelLarge)
+                    }
+                    Button(onClick = { saveSafeAreaEditor() }) {
+                        Text(tr("common.save"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+
+    // ----- Settings change handlers (formerly view listeners) --------------------------------
+
+    private fun onWirelessChanged(checked: Boolean) {
+        if (wirelessEnabled == checked) return
+        wirelessEnabled = checked
+        hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
+        appendLog("Wireless CarPlay ${if (wirelessEnabled) "enabled" else "disabled"}; applies when settings close")
+        requestStartupPrerequisites()
+    }
+
+    private fun onMfiTargetSelected(target: MfiTarget) {
+        if (mfiTarget == target) return
+        mfiTarget = target
+        updateMfiTargetFields()
+        appendLog("MFI target: ${mfiTargetLabel(target)}; applies when settings close")
+    }
+
+    private fun onHotspotModeSelected(mode: WirelessHotspotMode) {
+        if (wirelessHotspotMode == mode) return
+        wirelessHotspotMode = mode
+        hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
+        updateManualHotspotFields()
+        appendLog("Wi-Fi session mode: ${hotspotModeLabel(wirelessHotspotMode)}; applies when settings close")
+    }
+
+    private fun onVehicleFeatureChanged(feature: VehicleDataFeature, checked: Boolean) {
+        vehicleDataConfig = vehicleDataConfig.with(feature, checked)
+        if (feature == VehicleDataFeature.WHEEL_SPEED && checked) requestVehicleSpeedPermission()
+        updateVehicleDataStatus()
+    }
+
+    private fun onAdvancedAudioChannelMappingChanged(checked: Boolean) {
+        advancedAudioChannelMapping = checked
+        appendLog("Advanced audio channel mapping ${if (checked) "enabled" else "disabled"}; applies when settings close")
+        updateResolutionMenu()
+    }
+
+    private fun onHevcChanged(checked: Boolean) {
+        if (hevcEnabled == checked) return
+        hevcEnabled = checked
+        appendLog("HEVC (H.265) ${if (hevcEnabled) "enabled" else "disabled"}; applies when settings close")
+        updateResolutionMenu()
+    }
+
+    private fun onHevcSoftwareDecoderChanged(checked: Boolean) {
+        if (hevcSoftwareDecoderEnabled == checked) return
+        hevcSoftwareDecoderEnabled = checked
+        appendLog(
+            "HEVC software decoder ${if (hevcSoftwareDecoderEnabled) "enabled" else "disabled"}; " +
+                "applies when settings close",
+        )
+        updateResolutionMenu()
+    }
+
+    private fun onDebugLogsChanged(checked: Boolean) {
+        debugLogsEnabled = checked
+        if (!checked) clearScreenLogs()
+        appendLog("Debug logs ${if (debugLogsEnabled) "enabled" else "disabled"}")
+        updateDebugOverlays()
+    }
+
+    private fun onVideoFrameLogsChanged(checked: Boolean) {
+        videoFrameLogsEnabled = checked
+        sessionLog.videoFramesEnabled = checked
+        appendLog("Raw video file logging ${if (checked) "enabled" else "disabled"}")
+    }
+
+    private fun onMediaMetricsChanged(checked: Boolean) {
+        mediaMetricsEnabled = checked
+        appendLog("Media latency monitor ${if (checked) "enabled" else "disabled"}")
+        updateMediaMetricsOverlay()
+    }
+
+    private fun onAudioPacketCaptureChanged(checked: Boolean) {
+        audioPacketCaptureEnabled = checked
+        appendLog("Audio diagnostic capture ${if (checked) "enabled" else "disabled"}; applies when settings close")
+    }
+
+    private fun resetWebDisplayDrafts() {
+        webDisplayDrafts.clear()
+        for (type in listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT)) {
+            val config = webDisplayConfig(type)
+            webDisplayDrafts[type] = WebDisplayDraft(config.width.toString(), config.height.toString())
+        }
+        updateWebDisplayAddresses()
+    }
 
     private fun CarPlayStatus.describe(): String = when (this) {
         CarPlayStatus.DiscoveringMfi -> "Preparing MFi authentication"
@@ -4544,6 +3823,9 @@ class CarPlayHostActivity : ComponentActivity() {
         const val TAG = "xcertplay-usb"
         const val SCREEN_TYPE_MAIN = 110
         const val SCREEN_TYPE_ALT = 111
+        const val CLUSTER_WINDOW_MAX_WIDTH_FRACTION = 0.45
+        const val CLUSTER_WINDOW_MAX_HEIGHT_FRACTION = 0.35
+        const val CLUSTER_WINDOW_MIN_WIDTH_DP = 160
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
         const val LOG_RENDER_INTERVAL_MILLIS = 100L
         const val MAX_SCREEN_LOG_LINES = 100
@@ -4555,23 +3837,9 @@ class CarPlayHostActivity : ComponentActivity() {
         const val THREE_FINGER_COUNT = 3
         const val THREE_FINGER_SWIPE_DISTANCE_DP = 72
         const val THREE_FINGER_SWIPE_DIRECTION_RATIO = 1.15f
-        const val MAX_SETTINGS_MENU_WIDTH_PX = 1200
-        const val MENU_CORNER_DP = 22
-        const val MENU_BUTTON_CORNER_DP = 14
-        // Settings share the connection panel's palette (see HandshakePanelView).
-        val MENU_BACKGROUND = HandshakePanelView.CARD
-        val MENU_LABEL = HandshakePanelView.LABEL
-        // LABEL at ~67% over CARD, kept opaque so switch thumbs stay solid.
-        val MENU_SECONDARY = Color.rgb(0xAA, 0xAA, 0xAF)
-        val MENU_ACCENT = HandshakePanelView.ACCENT
-        val MENU_ACCENT_TRACK = HandshakePanelView.FILL
-        val MENU_TRACK_OFF = HandshakePanelView.FILL_DARK
-        val MENU_SEPARATOR = HandshakePanelView.SEPARATOR
-        val MENU_BUTTON = HandshakePanelView.FILL_DARK
-        val MENU_BUTTON_PRIMARY = HandshakePanelView.FILL
-        val MENU_DANGER = HandshakePanelView.RED
-        val MENU_DANGER_FILL = HandshakePanelView.withAlpha(HandshakePanelView.RED, 36)
-        val MENU_RIPPLE = HandshakePanelView.withAlpha(HandshakePanelView.LABEL, 40)
+        const val TIMELINE_RENDER_INTERVAL_MILLIS = 120L
+        val TWO_PANE_MIN_WIDTH = 720.dp
+        val CATEGORY_PANE_WIDTH = 320.dp
         val NO_VIDEO_BACKGROUND = Color.BLACK
     }
 

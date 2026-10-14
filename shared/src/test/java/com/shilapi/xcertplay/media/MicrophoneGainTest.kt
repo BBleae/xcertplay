@@ -7,9 +7,24 @@ import org.junit.Test
 class MicrophoneGainTest {
     @Test
     fun gainRangeIsClamped() {
-        assertEquals(80, MicrophoneGain.sanitize(20))
+        assertEquals(50, MicrophoneGain.sanitize(20))
         assertEquals(130, MicrophoneGain.sanitize(130))
-        assertEquals(200, MicrophoneGain.sanitize(500))
+        assertEquals(1000, MicrophoneGain.sanitize(5000))
+    }
+
+    @Test
+    fun sliderStepsAreLogarithmic() {
+        assertEquals(27, MicrophoneGain.STEP_COUNT)
+        assertEquals(50, MicrophoneGain.percentForStep(0))
+        assertEquals(100, MicrophoneGain.percentForStep(6))
+        assertEquals(200, MicrophoneGain.percentForStep(12))
+        assertEquals(1000, MicrophoneGain.percentForStep(26))
+        for (step in 0 until MicrophoneGain.STEP_COUNT) {
+            assertEquals(step, MicrophoneGain.stepForPercent(MicrophoneGain.percentForStep(step)))
+        }
+        assertEquals(6, MicrophoneGain.stepForPercent(MicrophoneGain.DEFAULT_PERCENT))
+        assertEquals(0, MicrophoneGain.stepForPercent(20))
+        assertEquals(26, MicrophoneGain.stepForPercent(5000))
     }
 
     @Test
@@ -24,14 +39,23 @@ class MicrophoneGainTest {
     }
 
     @Test
-    fun minimumGainAttenuatesSamples() {
+    fun maximumGainAmplifiesTenfold() {
+        val pcm = pcm(-1_000, 1_000, 32_767)
+
+        val peak = MicrophoneGain.applyPcm16InPlace(pcm, pcm.size, 1000)
+
+        assertArrayEquals(pcm(-10_000, 10_000, 32_767), pcm)
+        assertEquals(32_767, peak)
+    }
+
+    @Test
+    fun minimumGainHalvesSamples() {
         val pcm = pcm(-10_000, 10_000)
 
-        val peak = MicrophoneGain.applyPcm16InPlace(pcm, pcm.size, 80)
+        val peak = MicrophoneGain.applyPcm16InPlace(pcm, pcm.size, 50)
 
-        assertArrayEquals(pcm(-8_000, 8_000), pcm)
-        assertEquals(8_000, peak)
-        assertEquals(24, MicrophoneGain.peakPercent(peak))
+        assertArrayEquals(pcm(-5_000, 5_000), pcm)
+        assertEquals(5_000, peak)
     }
 
     private fun pcm(vararg samples: Int): ByteArray = ByteArray(samples.size * 2).also { bytes ->

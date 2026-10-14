@@ -8,6 +8,8 @@ import android.media.MediaRecorder
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.log10
+import kotlin.math.pow
 
 internal const val MICROPHONE_CAPTURE_RATE_HZ = 16_000
 
@@ -37,13 +39,28 @@ internal fun openMicrophoneRecorder(requestedBufferBytes: Int): AudioRecord {
 }
 
 object MicrophoneGain {
-    const val MIN_PERCENT = 80
-    const val MAX_PERCENT = 200
+    const val MIN_PERCENT = 50
+    const val MAX_PERCENT = 1000
     const val DEFAULT_PERCENT = 100
-    const val STEP_PERCENT = 10
+
+    /** Slider positions are spaced evenly in decibels: 1 dB per step, -6 dB (0.5x) to +20 dB (10x). */
+    const val MIN_DB = -6
+    const val MAX_DB = 20
+    const val STEP_DB = 1
+    const val STEP_COUNT = (MAX_DB - MIN_DB) / STEP_DB + 1
 
     fun sanitize(percent: Int): Int =
         percent.coerceIn(MIN_PERCENT, MAX_PERCENT)
+
+    fun percentForStep(step: Int): Int {
+        val db = MIN_DB + step.coerceIn(0, STEP_COUNT - 1) * STEP_DB
+        return sanitize(Math.round(DEFAULT_PERCENT * 10.0.pow(db / 20.0)).toInt())
+    }
+
+    fun stepForPercent(percent: Int): Int {
+        val db = 20.0 * log10(sanitize(percent).toDouble() / DEFAULT_PERCENT)
+        return Math.round((db - MIN_DB) / STEP_DB).toInt().coerceIn(0, STEP_COUNT - 1)
+    }
 
     internal fun applyPcm16InPlace(buffer: ByteArray, count: Int, percent: Int): Int {
         require(count in 0..buffer.size)

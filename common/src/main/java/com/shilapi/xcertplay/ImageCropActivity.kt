@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -11,14 +10,37 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.WindowCompat
+import com.shilapi.xcertplay.ui.i18n.I18n
+import com.shilapi.xcertplay.ui.i18n.tr
+import com.shilapi.xcertplay.ui.theme.Radius
+import com.shilapi.xcertplay.ui.theme.Space
+import com.shilapi.xcertplay.ui.theme.XcertplayTheme
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.ceil
@@ -27,10 +49,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** Loads one local image and writes a user-positioned 1:1 PNG into the AirPlay icon slot. */
-class ImageCropActivity : Activity() {
+class ImageCropActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var cropView: SquareCropView
-    private lateinit var statusView: TextView
+    private var status by mutableStateOf("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,42 +62,21 @@ class ImageCropActivity : Activity() {
             return
         }
 
+        I18n.init(this)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        window.statusBarColor = Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = Color.TRANSPARENT
         cropView = SquareCropView(this)
-        statusView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            text = "Loading image"
-        }
+        status = tr("crop.loading")
 
-        val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(10), dp(16), dp(16))
+        // The crop surface stays a view; the chrome follows the Lavender system.
+        val chrome = ComposeView(this).apply {
+            setContent {
+                XcertplayTheme(darkTheme = true) { CropChrome() }
+            }
         }
-        controls.addView(
-            Button(this).apply {
-                text = "Cancel"
-                isAllCaps = false
-                setOnClickListener {
-                    setResult(RESULT_CANCELED)
-                    finish()
-                }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        controls.addView(
-            Button(this).apply {
-                text = "Save 1:1"
-                isAllCaps = false
-                setOnClickListener { saveCrop() }
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-            },
-        )
-
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             addView(
@@ -86,19 +87,10 @@ class ImageCropActivity : Activity() {
                 ),
             )
             addView(
-                statusView,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
-                ).apply { topMargin = dp(12) },
-            )
-            addView(
-                controls,
+                chrome,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
         }
@@ -116,10 +108,10 @@ class ImageCropActivity : Activity() {
                     return@runOnUiThread
                 }
                 if (bitmap == null) {
-                    statusView.text = "Could not decode image"
+                    status = tr("crop.decode_failed")
                 } else {
                     cropView.setBitmap(bitmap)
-                    statusView.text = "Drag to move, pinch to zoom"
+                    status = tr("crop.help")
                 }
             }
         }
@@ -133,13 +125,13 @@ class ImageCropActivity : Activity() {
 
     private fun saveCrop() {
         val cropped = cropView.cropToSquare() ?: run {
-            statusView.text = "Image is not ready"
+            status = tr("crop.not_ready")
             return
         }
         val encoded = ByteArrayOutputStream().use { output ->
             if (!cropped.compress(Bitmap.CompressFormat.PNG, 100, output)) {
                 cropped.recycle()
-                statusView.text = "Could not encode image"
+                status = tr("crop.encode_failed")
                 return
             }
             cropped.recycle()
@@ -153,7 +145,41 @@ class ImageCropActivity : Activity() {
             )
             finish()
         } catch (_: Exception) {
-            statusView.text = "Could not save image"
+            status = tr("crop.save_failed")
+        }
+    }
+
+    @androidx.compose.runtime.Composable
+    private fun CropChrome() {
+        val scheme = MaterialTheme.colorScheme
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(Space.s4)) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopCenter),
+                shape = RoundedCornerShape(Radius.lg),
+                color = scheme.surfaceContainerHigh,
+            ) {
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = scheme.onSurface,
+                    modifier = Modifier.padding(horizontal = Space.s4, vertical = Space.s2),
+                )
+            }
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                shape = RoundedCornerShape(Radius.xl),
+                color = scheme.surfaceContainerHigh,
+            ) {
+                Row(Modifier.padding(Space.s3), horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
+                    TextButton(onClick = {
+                        setResult(RESULT_CANCELED)
+                        finish()
+                    }) { Text(tr("common.cancel"), style = MaterialTheme.typography.labelLarge) }
+                    Button(onClick = { saveCrop() }) {
+                        Text(tr("crop.save"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
     }
 
