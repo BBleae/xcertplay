@@ -14,6 +14,8 @@ data class CarPropertyReading(
 data class VehicleTelemetrySnapshot(
     val readings: Map<Int, CarPropertyReading>,
     val platform: VehiclePlatform,
+    val sourceUnavailableReason: String? = null,
+    val unavailableProperties: Map<Int, String> = emptyMap(),
 ) {
     fun fresh(id: Int, now: Long, maxAgeMillis: Long = 30_000): Number? =
         readings[id]?.takeIf { now - it.elapsedRealtimeMillis in 0..maxAgeMillis }?.value
@@ -52,6 +54,7 @@ data class VehicleTelemetrySnapshot(
 data class CarPropertyValue(val value: Number, val sourceEventMillis: Long?)
 interface ReadOnlyCarPropertyBackend : AutoCloseable {
     val isConnected: Boolean get() = true
+    val availabilityReason: String? get() = null
     fun connect(): Boolean
     fun read(propertyId: Int): CarPropertyValue?
 }
@@ -62,11 +65,13 @@ class CarPropertyDataStore(
     private val now: () -> Long,
 ) : AutoCloseable {
     private val readings = java.util.concurrent.ConcurrentHashMap<Int, CarPropertyReading>()
+    private val failures = java.util.concurrent.ConcurrentHashMap<Int, String>()
     private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     @Volatile private var connected = false
     fun connect(): Boolean {
         if (connected) return true
         unavailable.clear()
+        failures.clear()
         readings.clear()
         connected = backend.connect()
         return connected
@@ -74,22 +79,42 @@ class CarPropertyDataStore(
     /** A denied/unsupported property is not retried continuously; reconnect resets the policy. */
     fun refresh(ids: Iterable<Int>) {
         if (!connected) return
+        if (!backend.isConnected) {
+            readings.clear()
+            if (!backend.connect() || !backend.isConnected) return
+        }
         for (id in ids) {
             if (id in unavailable) continue
+            var failure: String? = null
             val value = try { backend.read(id) } catch (error: Exception) {
+                failure = if (error is SecurityException) "permission denied" else if (error is IllegalArgumentException || error is UnsupportedOperationException) "unsupported property" else "temporary service failure"
                 if (error is SecurityException || error is IllegalArgumentException ||
                     error is UnsupportedOperationException) unavailable += id
                 null // transient failures invalidate immediately but recover on the next poll
             }
-            if (value == null) readings.remove(id) else readings[id] =
-                CarPropertyReading(id, value.value, now(), "android.car/${platform.name}/0x${id.toString(16)}", value.sourceEventMillis)
+            synchronized(readings) {
+                if (!connected) return
+                if (value == null) {
+                    readings.remove(id)
+                    failures[id] = failure ?: "no available reading"
+                } else {
+                    failures.remove(id)
+                    readings[id] = CarPropertyReading(id, value.value, now(),
+                        "android.car/${platform.name}/0x${id.toString(16)}", value.sourceEventMillis)
+                }
+            }
         }
     }
-    fun snapshot() = VehicleTelemetrySnapshot(if (backend.isConnected) readings.toMap() else emptyMap(), platform)
+    fun snapshot() = VehicleTelemetrySnapshot(if (backend.isConnected) readings.toMap() else emptyMap(), platform,
+        if (!backend.isConnected) backend.availabilityReason ?: "car property service disconnected" else null,
+        failures.toMap())
     override fun close() {
-        connected = false
-        readings.clear()
-        unavailable.clear()
+        synchronized(readings) {
+            connected = false
+            readings.clear()
+            unavailable.clear()
+            failures.clear()
+        }
         backend.close()
     }
 }
