@@ -30,6 +30,7 @@ class VehicleSpeedLocationProvider(
 ) : Iap2LocationProvider {
     private var requested = emptySet<Int>()
     private var active = false
+    val isPhoneSubscribed: Boolean get() = active && 4 in requested
     override fun supportedComponents(): Set<Int> = buildSet {
         if (position != null) addAll(position.supportedComponents())
         if (speed.awaitSpeed(2_000) != null) add(4)

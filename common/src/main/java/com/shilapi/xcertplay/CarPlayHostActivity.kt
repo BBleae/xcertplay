@@ -187,6 +187,16 @@ class CarPlayHostActivity : ComponentActivity() {
             requestStartupPrerequisites()
             if (startGainTest) startMicrophoneGainTest()
         }
+    private var vehicleSpeedPermissionPending = false
+    private var vehicleSpeedPermissionAttempted = false
+    private val vehicleSpeedPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            vehicleSpeedPermissionPending = false
+            appendLog(if (granted) "Vehicle speed permission granted; save and reconnect to retry the source"
+                else "Vehicle speed permission denied; wheel speed remains unavailable")
+            updateVehicleDataStatus()
+            if (!menuOpen) requestStartupPrerequisites()
+        }
     private val locationPermission =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             awaitingLocationPermission = false
@@ -340,6 +350,11 @@ class CarPlayHostActivity : ComponentActivity() {
     private var hideTopBar = true
     private var hideBottomBar = true
     private var safeAreaDrawOutside = true
+    private var currentVehicleProvider: com.shilapi.xcertplay.vehicle.CarPropertyVehicleProvider? = null
+    private var currentGpsProvider: VehicleLocationProvider? = null
+    private var currentWheelProvider: com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider? = null
+    private var vehicleDataStatusView: TextView? = null
+    private var lastVehicleDataDiagnostics: String? = null
     private var vehicleDataConfig = VehicleDataConfig()
     private var locationReportingEnabled = false
     private var locationPermissionAvailable = false
@@ -555,6 +570,11 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun requestStartupPrerequisites() {
         if (locationReportingEnabled && !locationPermissionAvailable) {
             requestLocationPermission()
+            return
+        }
+        if (vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED) && !vehicleSpeedPermissionAttempted &&
+            canRequestVehicleSpeedPermission() && checkSelfPermission("android.car.permission.CAR_SPEED") != PackageManager.PERMISSION_GRANTED) {
+            requestVehicleSpeedPermission()
             return
         }
         if (wirelessEnabled) {
@@ -2067,7 +2087,7 @@ class CarPlayHostActivity : ComponentActivity() {
             label = "Vehicle property source",
             options = listOf(platforms[0] to "Standard Android Automotive"),
             selected = vehicleDataConfig.platform,
-        ) { platform -> vehicleDataConfig = vehicleDataConfig.copy(platform = platform) })
+        ) { platform -> vehicleDataConfig = vehicleDataConfig.copy(platform = platform); updateVehicleDataStatus() })
         VehicleDataFeature.entries.forEach { feature ->
             if (!feature.sourceImplemented) {
                 addView(menuText("${feature.label}: unavailable — ${feature.description}", 14f, MENU_SECONDARY))
@@ -2077,13 +2097,109 @@ class CarPlayHostActivity : ComponentActivity() {
                 label = feature.label,
                 checked = vehicleDataConfig.isEnabled(feature),
                 description = feature.description + "; applies when settings close",
-            ) { checked -> vehicleDataConfig = vehicleDataConfig.with(feature, checked) })
+             ) { checked ->
+                vehicleDataConfig = vehicleDataConfig.with(feature, checked)
+                if (feature == VehicleDataFeature.WHEEL_SPEED && checked) requestVehicleSpeedPermission()
+                updateVehicleDataStatus()
+            })
         }
+        vehicleDataStatusView = menuText("", 14f, MENU_SECONDARY).also { addView(it) }
+        addView(Button(this@CarPlayHostActivity).apply {
+            text = "Refresh permission & saved diagnostics"
+            applyMenuButtonStyle()
+            setOnClickListener { updateVehicleDataStatus() }
+        })
+        if (canRequestVehicleSpeedPermission()) addView(Button(this@CarPlayHostActivity).apply {
+            text = "Grant vehicle speed permission"
+            applyMenuButtonStyle()
+            setOnClickListener { requestVehicleSpeedPermission() }
+        })
+        addView(menuText(
+            "Cabin temperature, alerts, HVAC, doors, windows and tire pressure have no verified adapter " +
+                "to the phone in this app. Their vehicle properties are not silently sent.", 14f, MENU_SECONDARY,
+        ))
+        updateVehicleDataStatus()
         addView(menuText(
             "GPS requires precise location permission. Vehicle features need readable car properties; " +
                 "unavailable or stale readings are omitted. Updates are sent only after iPhone subscription.",
             14f, MENU_SECONDARY,
         ))
+    }
+
+    private fun canRequestVehicleSpeedPermission(): Boolean = runCatching {
+        val info = packageManager.getPermissionInfo("android.car.permission.CAR_SPEED", 0)
+        val isCar = packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE) ||
+            runCatching { Class.forName("android.car.Car") }.isSuccess
+        isCar && (info.protection) ==
+            android.content.pm.PermissionInfo.PROTECTION_DANGEROUS
+    }.getOrDefault(false)
+
+    private fun requestVehicleSpeedPermission() {
+        if (vehicleSpeedPermissionPending || !vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED) ||
+            !canRequestVehicleSpeedPermission() || checkSelfPermission("android.car.permission.CAR_SPEED") == PackageManager.PERMISSION_GRANTED) return
+        vehicleSpeedPermissionAttempted = true
+        vehicleSpeedPermissionPending = true
+        vehicleSpeedPermission.launch("android.car.permission.CAR_SPEED")
+    }
+
+    private fun updateVehicleDataStatus() {
+        if (menuOpen && lastVehicleDataDiagnostics != null) {
+            val speedPermission = if (!canRequestVehicleSpeedPermission()) "not applicable on this device"
+                else if (checkSelfPermission("android.car.permission.CAR_SPEED") == PackageManager.PERMISSION_GRANTED) "granted"
+                else "not granted"
+            vehicleDataStatusView?.text = "Settings pauses CarPlay. The data below was captured before it stopped; " +
+                "Save & Reconnect acquires new readings.\n" + lastVehicleDataDiagnostics +
+                "\nCurrent vehicle speed permission: $speedPermission" +
+                "\nNext connection source: ${vehicleDataConfig.platform.name.replace('_', ' ')}" +
+                "\nEnabled for next connection: ${vehicleDataConfig.enabled.filter { it.sourceImplemented }.joinToString { it.label }}"
+            return
+        }
+        val provider = currentVehicleProvider
+        val sample = provider?.snapshot()
+        val telemetry = provider?.telemetry()
+        val errors = telemetry?.unavailableProperties?.values?.distinct()?.joinToString(", ")
+        val reason = telemetry?.sourceUnavailableReason ?: errors?.takeIf { it.isNotBlank() } ?: "no fresh reading / unsupported property"
+        fun disabled(feature: VehicleDataFeature) = !vehicleDataConfig.isEnabled(feature)
+        fun missingState(ids: Set<Int>, continuous: Boolean = false, maxAge: Long = 30_000): String {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val stale = telemetry?.readings?.values?.filter { it.propertyId in ids }?.any {
+                now - it.elapsedRealtimeMillis !in 0..maxAge ||
+                    (continuous && it.sourceEventMillis?.let { event -> now - event !in 0..maxAge } == true)
+            } == true
+            return if (stale) "stale" else "unavailable"
+        }
+        val subscription = if (provider?.subscriptionActive == true) "phone subscribed" else "waiting for phone subscription"
+        vehicleDataStatusView?.text = buildString {
+            append("Last connection diagnostics\n")
+            append("GPS · Android location: ")
+            append(when {
+                !locationReportingEnabled -> "disabled"
+                !hasFineLocationPermission() -> "precise location permission required"
+                currentGpsProvider == null -> "unavailable — connect to acquire a source"
+                else -> currentGpsProvider!!.state().name.lowercase().replace('_', ' ')
+            })
+            append("\nCar source: ").append(provider?.platform?.name?.replace('_', ' ') ?: "not connected")
+            append("\nWheel speed & gear: ")
+            val speed = provider?.latestSpeed()
+            append(when {
+                disabled(VehicleDataFeature.WHEEL_SPEED) -> "disabled"
+                canRequestVehicleSpeedPermission() && checkSelfPermission("android.car.permission.CAR_SPEED") != PackageManager.PERMISSION_GRANTED -> "vehicle speed permission required"
+                speed == null -> "${missingState(setOf(com.shilapi.xcertplay.vehicle.VehicleTelemetrySnapshot.STANDARD_SPEED), true, 2_000)} — $reason"
+                else -> "${String.format(java.util.Locale.US, "%.1f", speed.metersPerSecond * 3.6)} km/h · ${speed.gear.letter} · ${if (currentWheelProvider?.isPhoneSubscribed == true) "phone subscribed" else "waiting for phone subscription"}"
+            })
+            append("\nEV battery & range: ")
+            append(when {
+                disabled(VehicleDataFeature.EV_STATUS) -> "disabled"
+                sample?.batteryPercent == null && sample?.electricRangeKm == null -> "unavailable — no verified SOC/range property for this source"
+                else -> "SOC ${sample?.batteryPercent?.let { "$it%" } ?: "unknown"} · range ${sample?.electricRangeKm?.let { "$it km" } ?: "unknown"} · $subscription"
+            })
+            append("\nOutside temperature: ")
+            append(when {
+                disabled(VehicleDataFeature.OUTSIDE_TEMPERATURE) -> "disabled"
+                sample?.outsideTemperatureCelsius == null -> "${missingState(setOf(com.shilapi.xcertplay.vehicle.VehicleTelemetrySnapshot.STANDARD_OUTSIDE_TEMPERATURE), true)} — $reason"
+                else -> "${sample.outsideTemperatureCelsius} °C · $subscription"
+            })
+        }
     }
 
     private fun buildLocationReportingSection(): View =
@@ -3731,17 +3847,21 @@ class CarPlayHostActivity : ComponentActivity() {
                 ), vehicleDataConfig, android.os.SystemClock::elapsedRealtime,
             ).also { it.start() }
         } else null
+        lastVehicleDataDiagnostics = null
+        currentVehicleProvider = vehicleProvider
+        currentGpsProvider = null
         val positionProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) {
                 VehicleLocationProvider(
                     AndroidCarPlayLocationProvider(this), vehicleDataConfig,
                     android.os.SystemClock::elapsedRealtime,
-                )
+                ).also { currentGpsProvider = it }
             } else {
                 null
             }
+        currentWheelProvider = null
         val locationProvider = if (vehicleProvider != null && vehicleDataConfig.isEnabled(VehicleDataFeature.WHEEL_SPEED))
-            com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider(positionProvider, vehicleProvider)
+            com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider(positionProvider, vehicleProvider).also { currentWheelProvider = it }
             else positionProvider
         appendLog(
             "Starting CarPlay controller at ${size.width}x${size.height} -> " +
@@ -3938,9 +4058,12 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun openSettingsMenu() {
         if (menuOpen || shuttingDown.get()) return
+        updateVehicleDataStatus()
+        lastVehicleDataDiagnostics = vehicleDataStatusView?.text?.toString()
         stopMicrophoneGainTest()
         settingsBaseline = captureSettingsBaseline()
         menuOpen = true
+        updateVehicleDataStatus()
         handshakeResetInProgress = true
         startAfterHandshakeReset = false
         hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
