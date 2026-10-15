@@ -64,10 +64,12 @@ data class CarPlayWebDisplayConfig(
 }
 
 /**
- * Creates both displays as one session behind one HTTPS/WebSocket endpoint (HTTPS so browsers
- * expose WebCodecs). The phone's compressed
- * video is forwarded untouched for the browser to decode; the main display also carries decoded
- * audio down and touch up. Local decoding only happens for an enabled preview.
+ * Both displays behind one HTTPS/WebSocket endpoint (HTTPS so browsers expose WebCodecs). The server
+ * and its channels outlive CarPlay sessions: an open page stays connected through a reconnect and
+ * picks the stream, touch and audio up again once the next session starts. Each session only binds
+ * the phone's media to the channels. The phone's compressed video is forwarded untouched for the
+ * browser to decode; the main display also carries decoded audio down and touch up. Local decoding
+ * only happens for an enabled preview.
  */
 object CarPlayWebDisplayFactory {
     const val MAIN = 110
@@ -77,6 +79,12 @@ object CarPlayWebDisplayFactory {
     private const val SOCKET_TIMEOUT_MS = 8000
     private const val CERTIFICATE_FILE = "web-display-tls.p12"
     private val sessions = ConcurrentHashMap<AndroidMediaSink, Session>()
+    private val channels = mapOf(
+        MAIN to WebDisplayChannel(MAIN, 1280, 720, enabled = false),
+        CLUSTER to WebDisplayChannel(CLUSTER, 1920, 720, enabled = false),
+    )
+    private var server: WebDisplayServer? = null
+    @Volatile private var current: Session? = null
 
     fun find(sink: AndroidMediaSink?): Session? = sink?.let(sessions::get)
 
@@ -86,29 +94,49 @@ object CarPlayWebDisplayFactory {
             .filter { it.isSiteLocalAddress }.mapNotNull { it.hostAddress }.distinct().sorted()
     }.getOrDefault(emptyList())
 
-    fun urls(type: Int, key: String): List<String> = addresses().map {
-        "https://$it:$PORT/${if (type == MAIN) "main" else "cluster"}?key=$key"
+    fun urls(type: Int): List<String> = addresses().map {
+        "https://$it:$PORT/${if (type == MAIN) "main" else "cluster"}"
     }
 
-    fun create(
+    /** Applies [configs] to the open pages and binds the next session; null when no display is enabled. */
+    @Synchronized fun create(
         context: Context,
         configs: Map<Int, CarPlayWebDisplayConfig>,
-        key: String,
         sendTouch: (List<AirPlayContact>) -> Boolean,
     ): Session? {
-        val enabled = configs.filterValues { it.enabled }
-        if (enabled.isEmpty()) return null
-        val channels = enabled.mapValues { (type, config) -> WebDisplayChannel(type, config.width, config.height) }
+        current?.close()
+        channels.forEach { (type, channel) ->
+            val config = configs[type]
+            channel.configure(config?.enabled == true, config?.width ?: channel.width, config?.height ?: channel.height)
+        }
+        if (configs.values.none { it.enabled }) {
+            server?.stop(); server = null
+            return null
+        }
+        // Renewed when an address appears, e.g. a hotspot that came back on another subnet.
         val tls = WebDisplayCertificate.sslContext(File(context.noBackupFilesDir, CERTIFICATE_FILE), addresses())
-        val server = WebDisplayServer(context.assets.open("carplay-display.html").use { it.readBytes() }, channels, key, sendTouch, tls = tls)
-        server.start(SOCKET_TIMEOUT_MS, true)
-        return Session(configs, channels, server)
+        val running = server ?: WebDisplayServer(
+            context.assets.open("carplay-display.html").use { it.readBytes() },
+            channels,
+            { contacts -> current?.sendTouch?.invoke(contacts) ?: false },
+            tls = tls,
+        ).also { it.start(SOCKET_TIMEOUT_MS, true); server = it }
+        running.tls = tls
+        return Session(configs, channels.filterKeys { configs[it]?.enabled == true }, sendTouch).also { current = it }
+    }
+
+    /** The session ended: open pages wait for the next one. */
+    @Synchronized private fun release(session: Session) {
+        if (current !== session) return
+        current = null
+        server?.releaseTouch()
+        channels.values.forEach { it.keyFrameSource = { false }; it.setActive(false) }
     }
 
     class Session internal constructor(
         private val configs: Map<Int, CarPlayWebDisplayConfig>,
         private val displays: Map<Int, WebDisplayChannel>,
-        private val server: WebDisplayServer,
+        internal val sendTouch: (List<AirPlayContact>) -> Boolean,
     ) : MediaTap, Closeable {
         private val closed = AtomicBoolean(false)
         @Volatile private var sink: AndroidMediaSink? = null
@@ -131,20 +159,23 @@ object CarPlayWebDisplayFactory {
             if (target != null) { previews[type] = target; sink.setSurface(type, target) }
         }
 
+        /** A closed session's late media must not reach the next session's pages. */
+        private fun channel(type: Int) = if (closed.get()) null else displays[type]
+
         override fun forwardsVideo(type: Int) = displays.containsKey(type)
-        override fun onVideoConfig(type: Int, codec: VideoCodec, codecData: ByteArray) { displays[type]?.config(codec, codecData) }
-        override fun onVideoFrame(type: Int, accessUnit: ByteArray, arrivalUs: Long) { displays[type]?.frame(accessUnit, arrivalUs) }
-        override fun onVideoActive(type: Int, active: Boolean) { displays[type]?.setActive(active) }
-        override fun takesAudio() = displays[MAIN]?.hasViewer == true
+        override fun onVideoConfig(type: Int, codec: VideoCodec, codecData: ByteArray) { channel(type)?.config(codec, codecData) }
+        override fun onVideoFrame(type: Int, accessUnit: ByteArray, arrivalUs: Long) { channel(type)?.frame(accessUnit, arrivalUs) }
+        override fun onVideoActive(type: Int, active: Boolean) { channel(type)?.setActive(active) }
+        override fun takesAudio() = channel(MAIN)?.hasViewer == true
         override fun onAudioPcm(stream: Int, sampleRate: Int, channels: Int, pcm: ByteArray, offset: Int, length: Int) {
-            displays[MAIN]?.audio(stream, sampleRate, channels, pcm, offset, length)
+            channel(MAIN)?.audio(stream, sampleRate, channels, pcm, offset, length)
         }
-        override fun onAudioStopped(stream: Int) { displays[MAIN]?.audioStopped(stream) }
+        override fun onAudioStopped(stream: Int) { channel(MAIN)?.audioStopped(stream) }
 
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
             sink?.let { sessions.remove(it, this) }; sink = null
-            server.stop()
+            release(this)
         }
     }
 }
@@ -156,8 +187,9 @@ object CarPlayWebDisplayFactory {
  */
 internal class WebDisplayChannel(
     val type: Int,
-    val width: Int,
-    val height: Int,
+    width: Int,
+    height: Int,
+    enabled: Boolean = true,
     private val now: () -> Long = System::nanoTime,
 ) {
     private class Config(val codec: VideoCodec, val message: ByteArray)
@@ -166,6 +198,10 @@ internal class WebDisplayChannel(
     private var lastKeyRequest: Long? = null
     @Volatile private var config: Config? = null
     @Volatile var active = false; private set
+    @Volatile var width = width; private set
+    @Volatile var height = height; private set
+    /** Turned off in Settings: open pages stay connected and say so. */
+    @Volatile var enabled = enabled; private set
     @Volatile var keyFrameSource: () -> Boolean = { false }
     /** On the main display, a connected browser also takes the phone's audio from the local speaker. */
     val hasViewer get() = viewers.isNotEmpty()
@@ -180,7 +216,15 @@ internal class WebDisplayChannel(
 
     fun detach(viewer: WebDisplayViewer) { viewers.remove(viewer) }
 
+    @Synchronized fun configure(enabled: Boolean, width: Int, height: Int) {
+        if (this.enabled == enabled && this.width == width && this.height == height) return
+        this.enabled = enabled; this.width = width; this.height = height
+        val state = state()
+        viewers.forEach { it.state(state) }
+    }
+
     @Synchronized fun setActive(value: Boolean) {
+        if (!value && !active && config == null) return
         active = value
         if (!value) config = null
         val state = state()
@@ -242,7 +286,7 @@ internal class WebDisplayChannel(
         keyFrameSource()
     }
 
-    private fun state() = """{"type":"state","active":$active,"width":$width,"height":$height,""" +
+    private fun state() = """{"type":"state","enabled":$enabled,"active":$active,"width":$width,"height":$height,""" +
         """"control":${type == CarPlayWebDisplayFactory.MAIN},"audio":${type == CarPlayWebDisplayFactory.MAIN}}"""
 
     companion object {
@@ -448,23 +492,23 @@ internal class WebDisplayTouch(
 internal class WebDisplayServer(
     private val page: ByteArray,
     private val channels: Map<Int, WebDisplayChannel>,
-    private val key: String,
     sendTouch: (List<AirPlayContact>) -> Boolean,
     port: Int = CarPlayWebDisplayFactory.PORT,
     tls: SSLContext,
 ) : NanoWSD("0.0.0.0", port) {
+    /** Used from the next connection on. */
+    @Volatile var tls: SSLContext = tls
     private val touch = WebDisplayTouch(sendTouch)
     private val watchdog = Executors.newSingleThreadScheduledExecutor { task ->
         Thread(task, "carplay-web-touch").apply { isDaemon = true }
     }
 
     init {
-        setServerSocketFactory { TlsServerSocket(tls.socketFactory) }
+        setServerSocketFactory { TlsServerSocket { this.tls.socketFactory } }
         watchdog.scheduleWithFixedDelay({ touch.expire(nowMs()) }, 250, 250, TimeUnit.MILLISECONDS)
     }
 
     override fun serve(session: IHTTPSession): Response {
-        if (session.parameters["key"]?.firstOrNull() != key) return text(Response.Status.UNAUTHORIZED, "Display key required")
         val parts = session.uri.trim('/').split('/')
         val type = route(parts.first()) ?: return text(Response.Status.NOT_FOUND, "Display not found")
         if (channels[type] == null) return text(Response.Status.NOT_FOUND, "Display is disabled")
@@ -483,6 +527,8 @@ internal class WebDisplayServer(
         val type = checkNotNull(route(handshake.uri.trim('/').substringBefore('/')))
         return DisplaySocket(handshake, type, channels.getValue(type))
     }
+
+    fun releaseTouch() = touch.release()
 
     override fun stop() { watchdog.shutdownNow(); touch.release(); super.stop() }
 
@@ -549,11 +595,11 @@ internal class WebDisplayServer(
  * TLS without Nagle delay for small touch-driven updates. NanoHTTPD flushes after every response
  * and WebSocket frame, so the output buffer above TLS makes each frame one record.
  */
-private class TlsServerSocket(private val tls: SSLSocketFactory) : ServerSocket() {
+private class TlsServerSocket(private val tls: () -> SSLSocketFactory) : ServerSocket() {
     override fun accept(): Socket {
         val plain = Socket().also { implAccept(it); it.tcpNoDelay = true }
         // The handshake runs on the first read, in the connection's own thread.
-        val socket = tls.createSocket(plain, plain.inetAddress.hostAddress, plain.port, true) as SSLSocket
+        val socket = tls().createSocket(plain, plain.inetAddress.hostAddress, plain.port, true) as SSLSocket
         socket.useClientMode = false
         return TlsSocket(socket)
     }

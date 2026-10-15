@@ -103,6 +103,29 @@ class CarPlayWebDisplayTest {
         assertEquals(1, messages.size); assertTrue((messages[0] as String).contains("\"active\":false"))
     }
 
+    @Test fun anOpenPageFollowsSettingsAndResumesWithTheNextSession() {
+        val channel = WebDisplayChannel(110, 1280, 720, enabled = false)
+        val viewer = WebDisplayViewer(Recorder(), start = false)
+        channel.attach(viewer)
+        assertTrue((viewer.drain().single() as String).contains("\"enabled\":false"))
+        channel.configure(true, 1920, 1080)
+        (viewer.drain().single() as String).let { assertTrue(it.contains("\"enabled\":true") && it.contains("\"width\":1920")) }
+
+        val parameters = byteArrayOf(1, 0x64, 0, 0x1f)
+        repeat(2) { session ->
+            channel.setActive(true); channel.config(VideoCodec.H264, parameters); channel.frame(idr, 10L + session)
+            val messages = viewer.drain()
+            assertTrue((messages[0] as String).contains("\"active\":true"))
+            assertArrayEquals("the same parameter sets restart the page after a reconnect", byteArrayOf(1, 0) + parameters, messages[1] as ByteArray)
+            assertEquals(2.toByte(), (messages[2] as ByteArray)[0])
+            // The session ends: the page stays connected and waits.
+            channel.setActive(false)
+            assertTrue((viewer.drain().single() as String).contains("\"active\":false"))
+        }
+        channel.setActive(false)
+        assertTrue("an idle channel does not repeat its state", viewer.drain().isEmpty())
+    }
+
     @Test fun aSlowBrowserSkipsAheadToRandomAccessInsteadOfQueueingLatency() {
         val viewer = WebDisplayViewer(Recorder(), start = false)
         viewer.config(VideoCodec.H264, byteArrayOf(1))
@@ -197,7 +220,7 @@ class CarPlayWebDisplayTest {
     private fun tlsServer(channels: Map<Int, WebDisplayChannel>, sendTouch: (List<AirPlayContact>) -> Boolean): Pair<WebDisplayServer, HttpClient> {
         val file = File(Files.createTempDirectory("tls").toFile(), "web.p12")
         val identity = WebDisplayCertificate.identity(file, emptyList(), System.currentTimeMillis())
-        val server = WebDisplayServer("page".toByteArray(), channels, "test-key", sendTouch, 0, WebDisplayCertificate.sslContext(file, emptyList()))
+        val server = WebDisplayServer("page".toByteArray(), channels, sendTouch, 0, WebDisplayCertificate.sslContext(file, emptyList()))
         server.start(3000, true)
         val trusted = KeyStore.getInstance("PKCS12").apply { load(null, null); setCertificateEntry("web", WebDisplayCertificate.certificate(identity)) }
         val tls = SSLContext.getInstance("TLS").apply {
@@ -206,7 +229,7 @@ class CarPlayWebDisplayTest {
         return server to HttpClient.newBuilder().sslContext(tls).connectTimeout(Duration.ofSeconds(3)).build()
     }
 
-    @Test fun webSocketCarriesStateAndTouchAndRejectsUnpairedOrCrossOriginClients() {
+    @Test fun webSocketCarriesStateAndTouchAndRejectsCrossOriginClients() {
         val main = WebDisplayChannel(110, 1280, 720)
         val cluster = WebDisplayChannel(111, 1920, 480)
         main.setActive(true)
@@ -229,14 +252,14 @@ class CarPlayWebDisplayTest {
         fun open(path: String, from: String) = client.newWebSocketBuilder().header("Origin", from)
             .buildAsync(URI("wss://127.0.0.1:$port$path"), listener).get(3, TimeUnit.SECONDS)
         try {
-            assertEquals(401, get("/main?key=wrong").statusCode())
-            get("/main?key=test-key").let { assertEquals(200, it.statusCode()); assertEquals("page", it.body()) }
-            assertEquals(400, get("/main/ws?key=test-key").statusCode())
-            assertTrue(runCatching { open("/main/ws?key=test-key", "https://other.test") }.isFailure)
-            assertTrue("plain http pages cannot open the socket", runCatching { open("/main/ws?key=test-key", "http://127.0.0.1:$port") }.isFailure)
-            assertTrue(runCatching { open("/main/ws?key=wrong", origin) }.isFailure)
+            get("/main").let { assertEquals(200, it.statusCode()); assertEquals("page", it.body()) }
+            assertEquals(200, get("/cluster/").statusCode())
+            assertEquals(404, get("/other").statusCode())
+            assertEquals(400, get("/main/ws").statusCode())
+            assertTrue(runCatching { open("/main/ws", "https://other.test") }.isFailure)
+            assertTrue("plain http pages cannot open the socket", runCatching { open("/main/ws", "http://127.0.0.1:$port") }.isFailure)
 
-            val socket = open("/main/ws?key=test-key", origin)
+            val socket = open("/main/ws", origin)
             assertTrue(texts.poll(2, TimeUnit.SECONDS)!!.contains("\"control\":true"))
             waitUntil { main.hasViewer }
             socket.sendText("t:0,0.5,0.5", true).get(2, TimeUnit.SECONDS)
@@ -245,7 +268,7 @@ class CarPlayWebDisplayTest {
             socket.sendClose(WebSocket.NORMAL_CLOSURE, "").get(2, TimeUnit.SECONDS)
             waitUntil { reports.last().none { it.down } && !main.hasViewer }
 
-            val instrument = open("/cluster/ws?key=test-key", origin)
+            val instrument = open("/cluster/ws", origin)
             assertTrue(texts.poll(2, TimeUnit.SECONDS)!!.contains("\"control\":false"))
             val count = reports.size
             instrument.sendText("t:0,0.5,0.5", true).get(2, TimeUnit.SECONDS)

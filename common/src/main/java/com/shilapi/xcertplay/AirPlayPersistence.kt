@@ -105,15 +105,6 @@ object AirPlayPersistence {
             .putBoolean(prefix + "preview", config.preview).apply()
     }
 
-    @Synchronized fun webDisplayKey(context: Context): String {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getString("web_display_key", null) ?: ByteArray(24).also {
-            java.security.SecureRandom().nextBytes(it)
-        }.joinToString("") { "%02x".format(it.toInt() and 255) }.also {
-            prefs.edit().putString("web_display_key", it).apply()
-        }
-    }
-
     fun loadDisplayScaleTenths(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return CarPlayDisplayScale.sanitize(

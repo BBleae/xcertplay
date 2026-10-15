@@ -1273,9 +1273,8 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun updateWebDisplayAddresses() {
-        val key = AirPlayPersistence.webDisplayKey(this)
         webDisplayAddresses = listOf(SCREEN_TYPE_MAIN, SCREEN_TYPE_ALT).associateWith { type ->
-            CarPlayWebDisplayFactory.urls(type, key).joinToString("\n")
+            CarPlayWebDisplayFactory.urls(type).joinToString("\n")
         }
     }
 
@@ -1877,7 +1876,6 @@ class CarPlayHostActivity : ComponentActivity() {
         val outputs = CarPlayWebDisplayFactory.create(
             context = applicationContext,
             configs = mapOf(SCREEN_TYPE_MAIN to mainWebDisplay, SCREEN_TYPE_ALT to clusterWebDisplay),
-            key = AirPlayPersistence.webDisplayKey(this),
             sendTouch = { CarPlayBackgroundSession.snapshot()?.controller?.sendTouch(it) ?: false },
         )
         return try {

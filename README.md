@@ -38,8 +38,9 @@
 1. In Settings, under `Web displays`, enable `Main display` and/or
    `Instrument display`, set the resolution, then tap `Save & Reconnect`.
 2. Put the browser device on the same LAN as the Android device and open the
-   address shown in Settings (`https://<IP>:8080/main` or `/cluster`, including
-   the access key; it can be copied).
+   address shown in Settings (`https://<IP>:8080/main` or `/cluster`; it can be
+   copied). An open page stays connected while CarPlay reconnects and resumes
+   by itself.
 3. The certificate is self-signed: each browser warns once, choose to continue.
 4. Main display page: touch with up to two fingers; while it is open the
    phone's audio plays in the page. Tap the screen once to turn on sound

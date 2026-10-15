@@ -30,7 +30,7 @@
 ## 网页显示
 
 1. 在设置的 `Web displays` 中开启 `Main display` 和/或 `Instrument display`，填写分辨率，点击 `Save & Reconnect`。
-2. 浏览器设备与 Android 接入同一局域网，打开设置里显示的地址（`https://<IP>:8080/main` 或 `/cluster`，带访问 key，可复制）。
+2. 浏览器设备与 Android 接入同一局域网，打开设置里显示的地址（`https://<IP>:8080/main` 或 `/cluster`，可复制）。打开的页面在 CarPlay 重连期间保持连接。
 3. 证书为自签名，每个浏览器首次打开会提示不安全，选择继续访问即可。
 4. 主屏网页：支持双指以内触控；打开后手机音频转到网页播放，点一下屏幕即可出声（浏览器限制）。麦克风仍使用 Android。
 5. 仪表网页仅显示，需要 iPhone 提供第二屏视频流。
