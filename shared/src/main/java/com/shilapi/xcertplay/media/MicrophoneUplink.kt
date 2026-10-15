@@ -15,12 +15,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Captures 16 kHz mono PCM from Android and sends it in the format negotiated by CarPlay.
- *
- * Wired sessions use PCM; wireless sessions use Opus. Both share the same recorder and socket
- * setup so the device-specific audio mode and address-family requirements stay consistent.
- */
+/** 采集 16 kHz 单声道 PCM，按协商格式发送 LPCM、Opus 或 AAC-ELD。 */
 internal class MicrophoneUplink(
     private val context: Context,
     private val config: MicrophoneConfig,
@@ -33,6 +28,7 @@ internal class MicrophoneUplink(
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var opusEncoder: OpusEncoder? = null
+    @Volatile private var eldEncoder: AacEldEncoder? = null
     private var thread: Thread? = null
 
     fun start(): Boolean {
@@ -58,8 +54,13 @@ internal class MicrophoneUplink(
             )
         }
 
+        if (config.codec == AudioCodecKind.AAC_ELD) {
+            require(config.channels == 1 && config.sampleRate <= 16_000)
+            eldEncoder = AacEldEncoder.create(config.sampleRate, config.samplesPerPacket, config.bitrate ?: 48_000)
+        }
+
         val captureFrameBytes =
-            MICROPHONE_CAPTURE_RATE_HZ * config.frameMillis / 1000 * BYTES_PER_SAMPLE
+            (MICROPHONE_CAPTURE_RATE_HZ.toLong() * config.samplesPerPacket / config.sampleRate).toInt() * BYTES_PER_SAMPLE
         val nextRecorder = openMicrophoneRecorder(captureFrameBytes * 4)
         recorder = nextRecorder
 
@@ -140,10 +141,11 @@ internal class MicrophoneUplink(
         counters: MicrophoneCounters,
         monoFrame: ByteArray,
     ) {
-        val bodies = if (config.codec == AudioCodecKind.OPUS) {
-            opusEncoder?.encode(monoFrame).orEmpty()
-        } else {
-            listOf(MicrophonePacketizer.toWirePcm(expandMonoPcm(monoFrame, config.channels)))
+        val bodies = when (config.codec) {
+            AudioCodecKind.OPUS -> opusEncoder?.encode(monoFrame).orEmpty()
+            AudioCodecKind.AAC_ELD -> eldEncoder?.encode(monoFrame).orEmpty()
+            AudioCodecKind.LPCM -> listOf(MicrophonePacketizer.toWirePcm(expandMonoPcm(monoFrame, config.channels)))
+            AudioCodecKind.AAC_LC -> error("AAC-LC microphone input is unsupported")
         }
         bodies.forEach { body ->
             val packet = MicrophonePacketizer.sealPacket(
@@ -221,6 +223,14 @@ internal class MicrophoneUplink(
             currentEncoder?.close()
         } catch (_: Exception) {
             // Best effort.
+        }
+
+        val currentEldEncoder = eldEncoder
+        eldEncoder = null
+        try {
+            currentEldEncoder?.close()
+        } catch (_: Exception) {
+            // 关闭失败也必须继续释放音频模式。
         }
 
         val currentAudioModeLease = audioModeLease

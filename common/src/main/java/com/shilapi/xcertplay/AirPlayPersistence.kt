@@ -6,6 +6,9 @@ import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
+import com.shilapi.xcertplay.airplay.AudioQualitySettings
+import com.shilapi.xcertplay.airplay.AudioQualityLimit
+import com.shilapi.xcertplay.airplay.AudioQualityProfiles
 import com.shilapi.xcertplay.airplay.PairingStore
 import com.shilapi.xcertplay.airplay.SafeAreaCodec
 import com.shilapi.xcertplay.airplay.SafeAreaRect
@@ -136,6 +139,46 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_HEVC_SOFTWARE_DECODER, enabled)
             .apply()
+    }
+
+    fun loadAudioQuality(context: Context): AudioQualitySettings {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val defaults = AudioQualitySettings()
+        // 历史值可能来自另一台车机或旧版本，必须收敛到该路合法的协议取值，
+        // 否则会推出一个空的格式声明，让这一路彻底没有声音。
+        fun limit(route: AudioQualityProfiles.Route, fallback: AudioQualityLimit): AudioQualityLimit {
+            val rate = prefs.getInt("audio_quality_${route.name.lowercase()}_rate", fallback.sampleRate)
+            val channels = prefs.getInt("audio_quality_${route.name.lowercase()}_channels", fallback.channels)
+            return AudioQualityLimit(
+                rate.takeIf { it in AudioQualityProfiles.persistentRates(route) } ?: fallback.sampleRate,
+                channels.takeIf { it in AudioQualityProfiles.persistentChannels(route) } ?: fallback.channels,
+            )
+        }
+        return AudioQualitySettings(
+            opusEnabled = prefs.getBoolean("audio_quality_opus", defaults.opusEnabled),
+            music = limit(AudioQualityProfiles.Route.MUSIC, defaults.music),
+            assistant = limit(AudioQualityProfiles.Route.ASSISTANT, defaults.assistant),
+            navigation = limit(AudioQualityProfiles.Route.NAVIGATION, defaults.navigation),
+            phone = limit(AudioQualityProfiles.Route.PHONE, defaults.phone),
+            microphone = limit(AudioQualityProfiles.Route.MICROPHONE, defaults.microphone),
+        )
+    }
+
+    fun saveAudioQuality(context: Context, quality: AudioQualitySettings) {
+        val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("audio_quality_opus", quality.opusEnabled)
+        listOf(
+            AudioQualityProfiles.Route.MUSIC to quality.music,
+            AudioQualityProfiles.Route.ASSISTANT to quality.assistant,
+            AudioQualityProfiles.Route.NAVIGATION to quality.navigation,
+            AudioQualityProfiles.Route.PHONE to quality.phone,
+            AudioQualityProfiles.Route.MICROPHONE to quality.microphone,
+        ).forEach { (route, limit) ->
+            val name = route.name.lowercase()
+            editor.putInt("audio_quality_${name}_rate", limit.sampleRate)
+                .putInt("audio_quality_${name}_channels", limit.channels)
+        }
+        editor.apply()
     }
 
     fun loadAdvancedAudioChannelMapping(context: Context): Boolean =

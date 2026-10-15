@@ -47,11 +47,7 @@ object AirPlayInfoPlist {
         )
         if (!config.disableAudioOutput) {
             info["audioLatencies"] = audioLatencies()
-            info["audioFormats"] = audioFormats(
-                config.entertainmentSampleRate,
-                config.microphone,
-                config.wirelessAudio,
-            )
+            info["audioFormats"] = CarPlayAudioFormats.build(config.audioQuality, config.microphone, config.wirelessAudio, config.audioSupportedFormats)
         }
         info["extendedFeatures"] = listOf("vocoderInfo", "enhancedRequestCarUI")
         info["displays"] = displays
@@ -115,44 +111,6 @@ object AirPlayInfoPlist {
             base(100), base(100, "default"), base(100, "media"), base(100, "telephony"),
             base(100, "speechRecognition"), base(100, "alert"), base(101), base(101, "default"),
             base(102, "default"),
-        )
-    }
-
-    private fun audioFormats(
-        entertainmentRate: Int,
-        microphone: Boolean,
-        wirelessAudio: Boolean,
-    ): List<Map<String, Any?>> {
-        fun format(type: Int, audioType: String, outputFormats: Int, inputFormats: Int? = null): Map<String, Any?> {
-            val entry = linkedMapOf<String, Any?>(
-                "type" to type,
-                "audioType" to audioType,
-                "audioOutputFormats" to outputFormats,
-            )
-            if (inputFormats != null) entry["audioInputFormats"] = inputFormats
-            return entry
-        }
-
-        val is48 = entertainmentRate == 48000
-        val pcmVoice = 0x3fc
-        val pcm = pcmVoice or (if (is48) 0xc000 else 0xc00)
-        val pcmMono = 0x154 or (if (is48) 0x4000 else 0x400)
-        // Wired CarPlay uses PCM for the low-latency streams. Keep Opus for wireless sessions.
-        val opus = if (wirelessAudio) 0x70000000 else 0
-        val aacLc = if (is48) 0x800000 else 0x400000
-        val pcmInput = if (microphone) pcmMono else null
-        val input = if (microphone) pcmMono or opus else null
-
-        return listOf(
-            format(100, "compatibility", pcm, pcmInput),
-            format(101, "compatibility", pcm),
-            format(100, "default", pcm or opus, input),
-            format(100, "alert", pcm or opus),
-            format(100, "media", pcm),
-            format(100, "telephony", pcmMono or opus, input),
-            format(100, "speechRecognition", pcmMono or opus, input),
-            format(101, "default", pcm or opus),
-            format(102, "media", aacLc),
         )
     }
 

@@ -1,7 +1,11 @@
 package com.shilapi.xcertplay
 
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 import android.Manifest
 import android.content.ActivityNotFoundException
@@ -92,6 +96,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.shilapi.xcertplay.airplay.AudioCodecKind
+import com.shilapi.xcertplay.airplay.AudioQualityLimit
+import com.shilapi.xcertplay.airplay.AudioQualityProfiles
+import com.shilapi.xcertplay.airplay.AudioQualitySettings
+import com.shilapi.xcertplay.media.AudioQualityCapabilities
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
@@ -404,6 +413,12 @@ class CarPlayHostActivity : ComponentActivity() {
     private var advancedAudioChannelMappingSupported = false
     private var advancedAudioChannelMapping by mutableStateOf(false)
     private var audioFocusEnabled by mutableStateOf(true)
+    private var audioQuality by mutableStateOf(AudioQualitySettings())
+    private var audioQualityOpen by mutableStateOf(false)
+    private var audioQualityCapabilities by mutableStateOf<AudioQualityCapabilities.Result?>(null)
+    private var audioQualityChecking by mutableStateOf(false)
+    private var audioQualityProbeFailure by mutableStateOf<String?>(null)
+    private var audioQualityProbeJob: Job? = null
     private var mainMediaAudioBufferDurationMs by mutableIntStateOf(MainMediaAudioBuffer.DEFAULT_DURATION_MS)
     // Snapshot state is safe to read from the media and log threads.
     private var debugLogsEnabled by mutableStateOf(false)
@@ -631,6 +646,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     if (menuOpen) {
                         when {
                             safeAreaEditorActive -> closeSafeAreaEditor()
+                            audioQualityOpen -> audioQualityOpen = false
                             settingsCategory != null && !settingsTwoPane -> settingsCategory = null
                             else -> cancelSettingsEdits()
                         }
@@ -672,6 +688,7 @@ class CarPlayHostActivity : ComponentActivity() {
             advancedAudioChannelMappingSupported &&
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
         audioFocusEnabled = AirPlayPersistence.loadAudioFocusEnabled(this)
+        audioQuality = AirPlayPersistence.loadAudioQuality(this)
         mainMediaAudioBufferDurationMs =
             AirPlayPersistence.loadMainMediaAudioBufferDurationMs(this)
         microphoneGainPercent = AirPlayPersistence.loadMicrophoneGainPercent(this)
@@ -1180,6 +1197,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveAutoStartOnBoot(this, autoStartOnBoot)
         AirPlayPersistence.saveAdvancedAudioChannelMapping(this, advancedAudioChannelMapping)
         AirPlayPersistence.saveAudioFocusEnabled(this, audioFocusEnabled)
+        AirPlayPersistence.saveAudioQuality(this, audioQuality)
         AirPlayPersistence.saveMainMediaAudioBufferDurationMs(
             this,
             mainMediaAudioBufferDurationMs,
@@ -1712,6 +1730,10 @@ class CarPlayHostActivity : ComponentActivity() {
             rightHandDrive = rightHandDrive,
             hevc = hevcEnabled,
             microphone = microphoneAvailable,
+            // 用进程级缓存而不是设置页状态：是否按实测收窄，不能取决于这次有没有点进音频质量页。
+            // 本进程还没探测过时为 null，保持协议默认声明。
+            audioQuality = effectiveAudioQuality(buildQualityOptions(AudioQualityCapabilities.cached())),
+            audioSupportedFormats = AudioQualityCapabilities.cached()?.allowedFormatBits,
             manufacturer = normalizedManufacturer(),
             model = normalizedModel(),
             oemLabel = oemLabel,
@@ -2400,6 +2422,12 @@ class CarPlayHostActivity : ComponentActivity() {
         setConnectionStage("Reconnecting after settings")
         gestureOverlay?.visibility = View.GONE
         settingsCategory = null
+        audioQualityOpen = false
+        audioQualityCapabilities = null
+        audioQualityChecking = false
+        audioQualityProbeFailure = null
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeJob = null
         mfiError = null
         manualHotspotError = null
         resetWebDisplayDrafts()
@@ -2458,6 +2486,10 @@ class CarPlayHostActivity : ComponentActivity() {
         stopMicrophoneGainTest()
         menuOpen = false
         settingsCategory = null
+        audioQualityOpen = false
+        audioQualityChecking = false
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeJob = null
         gestureOverlay?.visibility = View.VISIBLE
         updateWebDisplayPreviews()
         updateDebugOverlays()
@@ -2971,7 +3003,7 @@ class CarPlayHostActivity : ComponentActivity() {
                                         support = category.summary,
                                         leadingIcon = category.icon,
                                         selected = category == selected,
-                                        onClick = { settingsCategory = category },
+                                        onClick = { settingsCategory = category; audioQualityOpen = false },
                                     )
                                 }
                             }
@@ -2987,7 +3019,12 @@ class CarPlayHostActivity : ComponentActivity() {
                         ) {
                             ProvideGroupColor(scheme.surfaceContainerHigh) {
                                 Column(Modifier.fillMaxSize()) {
-                                    SmallTopBar(title = selected.title)
+                                    SmallTopBar(
+                                        title = if (audioQualityOpen) tr("settings.audio.quality") else selected.title,
+                                        navigation = if (audioQualityOpen) {
+                                            { LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), { audioQualityOpen = false }) }
+                                        } else null,
+                                    )
                                     CategoryContent(selected, Modifier.weight(1f))
                                 }
                             }
@@ -3010,7 +3047,7 @@ class CarPlayHostActivity : ComponentActivity() {
                                         support = category.summary,
                                         leadingIcon = category.icon,
                                         leadingBox = true,
-                                        onClick = { settingsCategory = category },
+                                        onClick = { settingsCategory = category; audioQualityOpen = false },
                                         trailing = { TrailingValue(null) },
                                     )
                                 }
@@ -3018,9 +3055,11 @@ class CarPlayHostActivity : ComponentActivity() {
                             }
                         } else {
                             SmallTopBar(
-                                title = current.title,
+                                title = if (audioQualityOpen) tr("settings.audio.quality") else current.title,
                                 navigation = {
-                                    LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), { settingsCategory = null })
+                                    LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), {
+                                        if (audioQualityOpen) audioQualityOpen = false else settingsCategory = null
+                                    })
                                 },
                             )
                             CategoryContent(current, Modifier.weight(1f))
@@ -3083,7 +3122,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun CategoryContent(category: SettingsCategory, modifier: Modifier) {
-        key(category) {
+        key(category, audioQualityOpen) {
             Column(
                 modifier
                     .fillMaxWidth()
@@ -3093,7 +3132,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 when (category) {
                     SettingsCategory.CONNECTION -> ConnectionSettings()
                     SettingsCategory.VEHICLE -> VehicleSettings()
-                    SettingsCategory.AUDIO -> AudioSettings()
+                    SettingsCategory.AUDIO -> if (audioQualityOpen) AudioQualitySettingsContent() else AudioSettings()
                     SettingsCategory.DISPLAY -> DisplaySettings()
                     SettingsCategory.WEB -> WebDisplaySettings()
                     SettingsCategory.IDENTITY -> IdentitySettings()
@@ -3483,6 +3522,16 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun AudioSettings() {
+        SettingsGroup {
+            row {
+                ListRow(
+                    headline = tr("settings.audio.quality"),
+                    support = tr("settings.audio.quality.summary"),
+                    onClick = ::openAudioQualitySettings,
+                    trailing = { TrailingValue(null) },
+                )
+            }
+        }
         SectionHeader(tr("settings.audio.playback"))
         val bufferValues = remember {
             (MainMediaAudioBuffer.MIN_DURATION_MS..MainMediaAudioBuffer.MAX_DURATION_MS step
@@ -3534,6 +3583,210 @@ class CarPlayHostActivity : ComponentActivity() {
             row { MicrophoneTestRow() }
         }
     }
+
+    private enum class QualityStream(val route: AudioQualityProfiles.Route, val key: String) {
+        MUSIC(AudioQualityProfiles.Route.MUSIC, "music"),
+        ASSISTANT(AudioQualityProfiles.Route.ASSISTANT, "assistant"),
+        NAVIGATION(AudioQualityProfiles.Route.NAVIGATION, "navigation"),
+        PHONE(AudioQualityProfiles.Route.PHONE, "phone"),
+        MICROPHONE(AudioQualityProfiles.Route.MICROPHONE, "microphone"),
+    }
+
+    /** 每一路当前可选的声道与采样率：协议允许 ∩ 本机能力 ∩ 用户设置的上限。 */
+    private class QualityOptions(private val byStream: Map<QualityStream, Map<Int, List<Int>>>) {
+        // 预先算好，避免每次重组都过滤排序一遍。
+        private val channelLists = byStream.mapValues { (_, byChannels) ->
+            byChannels.filterValues { it.isNotEmpty() }.keys.sorted()
+        }
+
+        fun channels(stream: QualityStream): List<Int> = channelLists[stream].orEmpty()
+
+        fun rates(stream: QualityStream, channels: Int): List<Int> =
+            byStream[stream]?.get(channels).orEmpty()
+
+        /** 用户设置是上限：在可用项里取不超过它的最大值。 */
+        fun effective(stream: QualityStream, requested: AudioQualityLimit): AudioQualityLimit? {
+            val channels = channels(stream).lastOrNull { it <= requested.channels } ?: return null
+            val rate = rates(stream, channels).lastOrNull { it <= requested.sampleRate } ?: return null
+            return AudioQualityLimit(rate, channels)
+        }
+    }
+
+    private fun openAudioQualitySettings() {
+        audioQualityOpen = true
+        // 先渲染缓存结果，设备没变化时不会出现"检测中"跳变，也不会重复探测。
+        audioQualityCapabilities = AudioQualityCapabilities.cached()
+        requestAudioQualityProbe()
+    }
+
+    /**
+     * 只在实际需要时探测。探测结果按音频设备指纹缓存在 [AudioQualityCapabilities] 里，
+     * 设备不变时这次调用几乎立即返回，不会重复创建 AudioTrack / MediaCodec。
+     */
+    private fun requestAudioQualityProbe(force: Boolean = false) {
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeFailure = null
+        val known = AudioQualityCapabilities.cached()
+        // 已有可用结果时不再显示"检测中"：设备没变化的话这轮只是校验指纹，
+        // 让页面在这里闪一下再展开属实没必要。
+        audioQualityChecking = known == null || known.failure != null
+        audioQualityProbeJob = lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    Result.success(AudioQualityCapabilities.probe(applicationContext, force))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    Result.failure(error)
+                }
+            }
+            audioQualityChecking = false
+            if (!audioQualityOpen) return@launch
+            val result = outcome.getOrNull()
+            // 命中缓存时返回的是同一个实例；跳过赋值可以省掉整页重组。
+            if (result != null && result !== known) audioQualityCapabilities = result
+            outcome.exceptionOrNull()?.let { error ->
+                audioQualityProbeFailure = error.message ?: error.javaClass.simpleName
+                Log.w(TAG, "音频能力检测失败", error)
+            }
+        }
+    }
+
+    private fun qualityLimit(stream: QualityStream): AudioQualityLimit = when (stream) {
+        QualityStream.MUSIC -> audioQuality.music
+        QualityStream.ASSISTANT -> audioQuality.assistant
+        QualityStream.NAVIGATION -> audioQuality.navigation
+        QualityStream.PHONE -> audioQuality.phone
+        QualityStream.MICROPHONE -> audioQuality.microphone
+    }
+
+    private fun setQualityLimit(stream: QualityStream, limit: AudioQualityLimit) {
+        audioQuality = when (stream) {
+            QualityStream.MUSIC -> audioQuality.copy(music = limit)
+            QualityStream.ASSISTANT -> audioQuality.copy(assistant = limit)
+            QualityStream.NAVIGATION -> audioQuality.copy(navigation = limit)
+            QualityStream.PHONE -> audioQuality.copy(phone = limit)
+            QualityStream.MICROPHONE -> audioQuality.copy(microphone = limit)
+        }
+    }
+
+    private fun buildQualityOptions(
+        caps: AudioQualityCapabilities.Result? = audioQualityCapabilities,
+    ): QualityOptions {
+        if (caps == null || caps.failure != null) return QualityOptions(emptyMap())
+        val opus = audioQuality.opusEnabled
+        return QualityOptions(
+            QualityStream.entries.associateWith { stream ->
+                AudioQualityProfiles.channels(stream.route, wirelessEnabled, opus).associateWith { channels ->
+                    AudioQualityProfiles.rates(stream.route, wirelessEnabled, opus)
+                        .filter { it in machineRates(caps, stream.route, channels, opus) }
+                }
+            },
+        )
+    }
+
+    /** 某一路某种声道数下，本机真正能处理的采样率。 */
+    private fun machineRates(
+        caps: AudioQualityCapabilities.Result,
+        route: AudioQualityProfiles.Route,
+        channels: Int,
+        opus: Boolean,
+    ): List<Int> = when {
+        // 无线且关闭 Opus 时，麦克风上行走 ELD 编码，由编码器实测结果决定。
+        route == AudioQualityProfiles.Route.MICROPHONE && wirelessEnabled && !opus -> caps.eldMicrophoneRates
+        route == AudioQualityProfiles.Route.MICROPHONE && !wirelessEnabled -> caps.microphoneCaptureRates
+        else -> caps.rates(AudioQualityProfiles.codec(route, wirelessEnabled, opus), channels)
+    }
+
+    /**
+     * 生成真正写进 /info 的上限。任何一路没有可用组合时退回该路的原始设置，
+     * 而不是让整个配置构造失败：手机自己会再筛一遍。
+     */
+    private fun effectiveAudioQuality(options: QualityOptions): AudioQualitySettings {
+        fun limit(stream: QualityStream): AudioQualityLimit =
+            options.effective(stream, qualityLimit(stream)) ?: qualityLimit(stream)
+        return audioQuality.copy(
+            music = limit(QualityStream.MUSIC),
+            assistant = limit(QualityStream.ASSISTANT),
+            navigation = limit(QualityStream.NAVIGATION),
+            phone = limit(QualityStream.PHONE),
+            microphone = limit(QualityStream.MICROPHONE),
+        )
+    }
+
+    @Composable
+    private fun AudioQualitySettingsContent() {
+        val caps = audioQualityCapabilities
+        val options = remember(caps, audioQuality, wirelessEnabled) { buildQualityOptions() }
+        HelpText(tr("settings.audio.quality.help"))
+        val compatibleAvailable = caps?.compatibleModeAvailable == true
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.audio.quality.opus"),
+                    support = tr("settings.audio.quality.opus.support"),
+                    checked = audioQuality.opusEnabled,
+                    // 关闭 Opus 需要本机真的能用 ELD 收和发；打开永远允许。
+                    enabled = !audioQualityChecking && (!audioQuality.opusEnabled || compatibleAvailable),
+                    onCheckedChange = { audioQuality = audioQuality.copy(opusEnabled = it) },
+                )
+            }
+        }
+        // 有线 CarPlay 全部走 LPCM，这条只对无线有意义。
+        if (!audioQualityChecking && wirelessEnabled && !compatibleAvailable) {
+            HelpText(tr("settings.audio.quality.compatibility_unavailable"))
+        }
+        when {
+            audioQualityChecking -> {
+                HelpText(tr("settings.audio.quality.checking"))
+                return
+            }
+            caps == null || caps.failure != null -> {
+                HelpText(tr("settings.audio.quality.check_failed"))
+                (caps?.failure ?: audioQualityProbeFailure)?.let {
+                    HelpText(tr("settings.audio.quality.check_failed_reason", "reason" to it))
+                }
+                TextButton(onClick = { requestAudioQualityProbe(force = true) }) { Text(tr("settings.audio.quality.retry")) }
+                return
+            }
+        }
+        for (stream in QualityStream.entries) {
+            val requested = qualityLimit(stream)
+            val channels = options.channels(stream)
+            val effective = options.effective(stream, requested)
+            val selectedChannels = effective?.channels ?: channels.firstOrNull() ?: requested.channels
+            SectionHeader(tr("settings.audio.quality.${stream.key}"))
+            val rates = options.rates(stream, selectedChannels)
+            SettingsGroup {
+                row {
+                    SelectRow(
+                        title = tr("settings.audio.quality.sample_rate"),
+                        options = rates.map { it to rateLabel(it) },
+                        selected = effective?.sampleRate ?: requested.sampleRate,
+                        support = if (effective == null) tr("settings.audio.quality.unsupported") else null,
+                        enabled = rates.isNotEmpty(),
+                        onSelected = { setQualityLimit(stream, requested.copy(sampleRate = it)) },
+                    )
+                }
+                row {
+                    SelectRow(
+                        title = tr("settings.audio.quality.channels"),
+                        options = channels.map {
+                            it to tr(if (it == 1) "settings.audio.quality.mono" else "settings.audio.quality.stereo")
+                        },
+                        selected = selectedChannels,
+                        enabled = channels.size > 1,
+                        onSelected = { setQualityLimit(stream, requested.copy(channels = it)) },
+                    )
+                }
+            }
+        }
+        SectionHeader(tr("settings.audio.quality.bitrate"))
+        SettingsGroup { row { ListRow(headline = tr("settings.audio.quality.automatic")) } }
+    }
+
+    private fun rateLabel(rate: Int): String =
+        if (rate % 1000 == 0) "${rate / 1000} kHz" else String.format(java.util.Locale.US, "%.1f kHz", rate / 1000.0)
 
     @Composable
     private fun MicrophoneTestRow() {

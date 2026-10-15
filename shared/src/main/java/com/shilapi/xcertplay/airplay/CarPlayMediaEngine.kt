@@ -133,7 +133,7 @@ class CarPlayMediaEngine(
             (stream["audioFormat"] as? Number)?.toLong() ?: 0L,
             type,
             audioType,
-        )
+        ).copy(framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt()?.takeIf { it > 0 })
         Log.i(
             TAG,
             "airplay audio format type=$type audioType=$audioType codec=${format.codec} " +
@@ -371,7 +371,20 @@ class CarPlayMediaEngine(
         } else {
             format.sampleRate
         }
+        if (format.channels != 1 || micRate > 16_000) {
+            Log.w(TAG, "microphone format exceeds mono/16 kHz limit")
+            return null
+        }
         val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0
+        val eldFrames = if (format.codec == AudioCodecKind.AAC_ELD) {
+            val samples = framesPerPacket.takeIf { it > 0 }
+                ?: com.shilapi.xcertplay.media.AacEldFormat.DEFAULT_FRAMES_PER_PACKET
+            if (samples != 480 && samples != 512) {
+                Log.w(TAG, "unsupported AAC-ELD framesPerPacket=$samples")
+                return null
+            }
+            samples
+        } else null
         val frameMillis = if (format.codec == AudioCodecKind.OPUS) {
             20
         } else if (framesPerPacket > 0) {
@@ -390,7 +403,12 @@ class CarPlayMediaEngine(
             port = port,
             key = key,
             codec = format.codec,
-            bitrate = if (format.codec == AudioCodecKind.OPUS) opusBitrate else null,
+            bitrate = when (format.codec) {
+                AudioCodecKind.OPUS -> opusBitrate
+                AudioCodecKind.AAC_ELD -> 48_000
+                else -> null
+            },
+            framesPerPacket = eldFrames ?: framesPerPacket.takeIf { it > 0 && format.codec != AudioCodecKind.OPUS },
         )
     }
 

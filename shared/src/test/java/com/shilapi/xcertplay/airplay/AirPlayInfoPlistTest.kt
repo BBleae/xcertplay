@@ -153,15 +153,15 @@ class AirPlayInfoPlistTest {
                 .containsKey("audioInputFormats"),
         )
         assertEquals(
-            0x4154,
+            0x14L,
             defaultAudio(AirPlayInfoPlist.build(base.copy(microphone = true)))["audioInputFormats"],
         )
         assertEquals(
-            0x4154,
+            0x14L,
             telephony(AirPlayInfoPlist.build(base.copy(microphone = true)))["audioInputFormats"],
         )
         assertEquals(
-            0x70004154,
+            0x10000000L,
             defaultAudio(AirPlayInfoPlist.build(base.copy(microphone = true, wirelessAudio = true)))["audioInputFormats"],
         )
     }
@@ -175,13 +175,14 @@ class AirPlayInfoPlistTest {
             sourceVersion = "366.0",
             main = AirPlayDisplayConfig(widthPixels = 1280, heightPixels = 720),
         )
-        fun defaultOutput(config: AirPlayConfig): Int =
+        fun defaultOutput(config: AirPlayConfig): Long =
             (AirPlayInfoPlist.build(config)["audioFormats"] as List<*>)
                 .map { it as Map<*, *> }
-                .single { it["type"] == 100 && it["audioType"] == "default" }["audioOutputFormats"] as Int
+                .single { it["type"] == 100 && it["audioType"] == "default" }["audioOutputFormats"] as Long
 
-        assertEquals(0xc3fc, defaultOutput(base))
-        assertEquals(0x7000c3fc, defaultOutput(base.copy(wirelessAudio = true)))
+        // 有线只声明 PCM；无线在此之上追加 Opus，供关闭兼容模式以外的场景使用。
+        assertEquals(0L, defaultOutput(base) and 0x70000000L)
+        assertEquals(0x60000000L, defaultOutput(base.copy(wirelessAudio = true)) and 0x70000000L)
     }
 
     @Test

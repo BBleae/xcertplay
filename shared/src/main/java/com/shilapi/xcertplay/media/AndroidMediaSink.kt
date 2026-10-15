@@ -779,8 +779,7 @@ private class AudioRenderer(
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
         try {
             when (format.codec) {
-                AudioCodecKind.AAC_LC -> configureCodec(MediaFormat.MIMETYPE_AUDIO_AAC)
-                AudioCodecKind.OPUS -> configureCodec(MediaFormat.MIMETYPE_AUDIO_OPUS)
+                AudioCodecKind.AAC_LC, AudioCodecKind.AAC_ELD, AudioCodecKind.OPUS -> configureCodec()
                 AudioCodecKind.LPCM -> Unit
             }
             createTrack()
@@ -794,34 +793,21 @@ private class AudioRenderer(
         }
     }
 
-    private fun configureCodec(mime: String) {
-        val mediaFormat = MediaFormat().apply {
-            setString(MediaFormat.KEY_MIME, mime)
-            setInteger(MediaFormat.KEY_SAMPLE_RATE, format.sampleRate)
-            setInteger(MediaFormat.KEY_CHANNEL_COUNT, format.channels)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
-            if (mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
-                setInteger(MediaFormat.KEY_IS_ADTS, 1)
-                setByteBuffer("csd-0", ByteBuffer.wrap(aacAudioSpecificConfig()))
-            } else {
-                setByteBuffer("csd-0", ByteBuffer.wrap(opusHead()))
-                setByteBuffer("csd-1", ByteBuffer.wrap(opusCodecDelay()))
-                setByteBuffer("csd-2", ByteBuffer.wrap(opusSeekPreRoll()))
-            }
-        }
+    private fun configureCodec() {
+        // 与 AudioQualityCapabilities 的探测走同一套格式和解码器选择，探测通过就一定能在这里打开。
+        val mediaFormat = AudioDecoders.format(format.codec, format.sampleRate, format.channels, format.framesPerPacket)
+        val mime = mediaFormat.getString(MediaFormat.KEY_MIME)
         if (mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
             Log.i(
                 TAG,
-                "audio AAC config rate=${format.sampleRate} channels=${format.channels} " +
+                "audio AAC config codec=${format.codec} rate=${format.sampleRate} channels=${format.channels} " +
                     "csd0=${aacAudioSpecificConfig().toHexString()}",
             )
         }
         codec = try {
-            MediaCodec.createDecoderByType(mime).also {
-                it.configure(mediaFormat, null, null, 0)
-                it.start()
-                Log.i(TAG, "audio decoder configured mime=$mime name=${it.name}")
-            }
+            val (decoder, name) = AudioDecoders.open(mediaFormat, AudioDecoders.candidates(format.codec))
+            Log.i(TAG, "audio decoder configured mime=$mime name=$name")
+            decoder
         } catch (error: Exception) {
             Log.e(TAG, "audio decoder configuration failed mime=$mime", error)
             null
@@ -886,11 +872,11 @@ private class AudioRenderer(
     }
 
     private fun aacAudioSpecificConfig(): ByteArray {
-        val frequencyIndex = MediaCodecSupport.aacFrequencyIndex(format.sampleRate)
-        val value = (AAC_OBJECT_TYPE_LC shl 11) or
-            (frequencyIndex shl 7) or
-            (format.channels.coerceIn(1, 7) shl 3)
-        return byteArrayOf((value ushr 8).toByte(), value.toByte())
+        if (format.codec == AudioCodecKind.AAC_ELD) {
+            return AacEldFormat.audioSpecificConfig(format.sampleRate, format.channels,
+                format.framesPerPacket ?: AacEldFormat.DEFAULT_FRAMES_PER_PACKET)
+        }
+        return AacLcFormat.audioSpecificConfig(format.sampleRate, format.channels)
     }
 
     private fun audioAttributes(): AudioAttributes {
@@ -932,33 +918,6 @@ private class AudioRenderer(
         AudioContentType.SPEECH -> AudioAttributes.CONTENT_TYPE_SPEECH
     }
 
-    /** Minimal OpusHead CSD for the mono 48 kHz stream CarPlay negotiates. */
-    private fun opusHead(): ByteArray {
-        val head = ByteArray(19)
-        "OpusHead".toByteArray(Charsets.US_ASCII).copyInto(head, 0)
-        head[8] = 1
-        head[9] = format.channels.toByte()
-        head[10] = 0x38
-        head[11] = 0x01
-        head[12] = format.sampleRate.toByte()
-        head[13] = (format.sampleRate ushr 8).toByte()
-        head[14] = (format.sampleRate ushr 16).toByte()
-        head[15] = (format.sampleRate ushr 24).toByte()
-        return head
-    }
-
-    private fun opusCodecDelay(): ByteArray =
-        java.nio.ByteBuffer.allocate(8)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            .putLong(OPUS_CODEC_DELAY_NANOS)
-            .array()
-
-    private fun opusSeekPreRoll(): ByteArray =
-        java.nio.ByteBuffer.allocate(8)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            .putLong(OPUS_SEEK_PRE_ROLL_NANOS)
-            .array()
-
     private fun handle(packet: AudioPacket) {
         val rtp = packet.rtp
         val timestampUs = sampleTimestampUs(packet.sample)
@@ -980,6 +939,10 @@ private class AudioRenderer(
                         timestampUs,
                     )
                 }
+            }
+            AudioCodecKind.AAC_ELD -> {
+                val accessUnit = rtp.copyOfRange(12, rtp.size)
+                if (accessUnit.isNotEmpty()) feedCodec(accessUnit, timestampUs)
             }
             AudioCodecKind.OPUS -> {
                 val accessUnit = rtp.copyOfRange(12, rtp.size)
@@ -1249,10 +1212,7 @@ private class AudioRenderer(
 
     private companion object {
         const val TAG = "xcertplay-usb"
-        const val AAC_OBJECT_TYPE_LC = 2
         const val MIN_OPUS_PACKET_BYTES = 4
-        const val OPUS_CODEC_DELAY_NANOS = 6_500_000L
-        const val OPUS_SEEK_PRE_ROLL_NANOS = 80_000_000L
         const val INPUT_TIMEOUT_US = 10_000L
         const val MAX_QUEUED_PACKETS = 64
         const val MIN_TRACK_BUFFER_BYTES = 16 * 1024
