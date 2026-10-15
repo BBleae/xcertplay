@@ -19,6 +19,7 @@
   "home.transport.wired": "سلكي · USB",
   "home.transport.wireless": "لاسلكي",
   "home.previous_failure": "المحاولة الأخيرة: {reason}",
+  "home.retry": "إعادة الاتصال",
   "home.step_of": "الخطوة {step} من {total}",
   "home.streams": "{count} بث",
   "home.log.title": "سجل الاتصال",

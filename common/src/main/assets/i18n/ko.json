@@ -19,6 +19,7 @@
   "home.transport.wired": "유선 · USB",
   "home.transport.wireless": "무선",
   "home.previous_failure": "마지막 시도: {reason}",
+  "home.retry": "다시 연결",
   "home.step_of": "전체 {total}단계 중 {step}단계",
   "home.streams": "스트림 {count}개",
   "home.log.title": "연결 로그",

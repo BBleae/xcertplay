@@ -100,6 +100,7 @@ import java.util.Locale
  * phase, progress, links) next to, or above, the connection log.
  *
  * [revision] must change whenever [timeline] is mutated; the model itself is not observable.
+ * A non-null [onRetry] means automatic retries ran out: the status glyph becomes a retry button.
  */
 @Composable
 fun HomeScreen(
@@ -110,6 +111,7 @@ fun HomeScreen(
     debugLogs: Boolean,
     logLines: List<ScreenLogLine>,
     onOpenSettings: () -> Unit,
+    onRetry: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -141,14 +143,14 @@ fun HomeScreen(
                 val heroWidth = (maxWidth * 0.4f).coerceIn(300.dp, 440.dp).coerceAtMost(maxWidth / 2)
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
                     Box(Modifier.width(heroWidth).fillMaxHeight().verticalScroll(rememberScrollState())) {
-                        HeroCard(timeline, revision, status, wireless, Modifier.fillMaxWidth())
+                        HeroCard(timeline, revision, status, wireless, onRetry, Modifier.fillMaxWidth())
                     }
                     LogPanel(timeline, revision, debugLogs, logLines, Modifier.weight(1f).fillMaxHeight())
                 }
             } else {
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(Space.s3)) {
                     HeroCard(
-                        timeline, revision, status, wireless,
+                        timeline, revision, status, wireless, onRetry,
                         Modifier.fillMaxWidth().widthIn(max = 720.dp).align(Alignment.CenterHorizontally),
                     )
                     LogPanel(
@@ -172,6 +174,7 @@ private fun HeroCard(
     revision: Int,
     status: String,
     wireless: Boolean,
+    onRetry: (() -> Unit)?,
     modifier: Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -205,7 +208,18 @@ private fun HeroCard(
     ) {
         Column(Modifier.padding(Space.s6), verticalArrangement = Arrangement.spacedBy(Space.s4)) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(Space.s4)) {
-                StateGlyph(glyph, size = 40.dp)
+                if (onRetry != null) {
+                    LvIconButton(
+                        icon = R.drawable.ic_ms_replay,
+                        description = tr("home.retry"),
+                        onClick = onRetry,
+                        modifier = Modifier.size(40.dp),
+                        tint = scheme.onPrimary,
+                        container = scheme.primary,
+                    )
+                } else {
+                    StateGlyph(glyph, size = 40.dp)
+                }
                 Column(Modifier.weight(1f)) {
                     Text(
                         title,

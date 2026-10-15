@@ -540,6 +540,8 @@ class CarPlayHostActivity : ComponentActivity() {
     private var restartGeneration = 0
     private var reconnectScheduled = false
     private var reconnectAttempts = 0
+    /** Automatic retries ran out; the home screen offers a manual reconnect instead. */
+    private var reconnectExhausted by mutableStateOf(false)
     private var screenLogs by mutableStateOf<List<ScreenLogLine>>(emptyList())
     private val sessionLog get() = CarPlayBackgroundSession.log
     private var gestureSequenceActive = false
@@ -1919,6 +1921,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     }
                     activeAirPlaySession = session
                     reconnectAttempts = 0
+                    reconnectExhausted = false
                     syncAirPlayDarkMode()
                     if (menuOpen) return@runOnUiThread
                     appendLog("AirPlay session active")
@@ -2289,7 +2292,13 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun reconnectAfterLoss(reason: String) {
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
-        if (reconnectScheduled) return
+        if (reconnectScheduled || reconnectExhausted) return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            reconnectExhausted = true
+            setConnectionStage("$reason; stopped after $MAX_RECONNECT_ATTEMPTS attempts")
+            appendLog("$reason; stopped retrying after $MAX_RECONNECT_ATTEMPTS attempts, waiting for manual reconnect")
+            return
+        }
         reconnectScheduled = true
         val generation = restartGeneration
         val delayMillis = if (reason.contains("AirPlay iAP tunnel", ignoreCase = true)) {
@@ -2298,8 +2307,9 @@ class CarPlayHostActivity : ComponentActivity() {
             minOf(
                 RECONNECT_DELAY_MILLIS shl reconnectAttempts.coerceAtMost(RECONNECT_MAX_SHIFT),
                 RECONNECT_MAX_DELAY_MILLIS,
-            ).also { reconnectAttempts++ }
+            )
         }
+        reconnectAttempts++
         appendLog("$reason; retrying in ${delayMillis}ms")
         mainHandler.postDelayed(
             {
@@ -2317,6 +2327,14 @@ class CarPlayHostActivity : ComponentActivity() {
             },
             delayMillis,
         )
+    }
+
+    /** The home screen's retry button: reconnects now, and that try opens a fresh retry budget. */
+    private fun reconnectManually() {
+        if (!reconnectExhausted || shuttingDown.get() || menuOpen || handshakeResetInProgress) return
+        reconnectExhausted = false
+        reconnectAttempts = 1
+        restartCarPlay("Manual reconnect")
     }
 
     /** Full-stack fallback when an AirPlay-only reconnect is unavailable. */
@@ -2366,6 +2384,9 @@ class CarPlayHostActivity : ComponentActivity() {
         updateVehicleDataStatus()
         handshakeResetInProgress = true
         startAfterHandshakeReset = false
+        reconnectScheduled = false
+        reconnectAttempts = 0
+        reconnectExhausted = false
         hotspotStatus = HotspotStatus(state = if (wirelessEnabled) "stopped" else "off")
         val generation = ++restartGeneration
         controller?.sendTouch(emptyList())
@@ -2913,6 +2934,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     debugLogs = debugLogsEnabled,
                     logLines = screenLogs,
                     onOpenSettings = { openSettingsMenu() },
+                    onRetry = if (reconnectExhausted) ::reconnectManually else null,
                 )
                 debugLogsEnabled -> StreamingLogOverlay(screenLogs, Modifier.align(Alignment.BottomStart))
             }
@@ -4137,6 +4159,7 @@ class CarPlayHostActivity : ComponentActivity() {
         const val RECONNECT_DELAY_MILLIS = 2_000L
         const val RECONNECT_MAX_DELAY_MILLIS = 30_000L
         const val RECONNECT_MAX_SHIFT = 4
+        const val MAX_RECONNECT_ATTEMPTS = 3
         const val IAP_TUNNEL_RECONNECT_DELAY_MILLIS = 15_000L
         const val CONTROLLER_CLOSE_TIMEOUT_MILLIS = 4_000L
         const val AUDIO_CAPTURE_DIRECTORY = "audio-captures"

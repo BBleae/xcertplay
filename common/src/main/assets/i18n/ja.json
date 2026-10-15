@@ -19,6 +19,7 @@
   "home.transport.wired": "有線 · USB",
   "home.transport.wireless": "ワイヤレス",
   "home.previous_failure": "前回の試行: {reason}",
+  "home.retry": "再接続",
   "home.step_of": "ステップ {step} / {total}",
   "home.streams": "{count} 個のストリーム",
   "home.log.title": "接続ログ",

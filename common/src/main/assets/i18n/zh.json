@@ -19,6 +19,7 @@
   "home.transport.wired": "有线 · USB",
   "home.transport.wireless": "无线",
   "home.previous_failure": "上次尝试：{reason}",
+  "home.retry": "重新连接",
   "home.step_of": "第 {step} 步，共 {total} 步",
   "home.streams": "{count} 路流",
   "home.log.title": "连接日志",

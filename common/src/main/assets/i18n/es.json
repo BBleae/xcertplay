@@ -19,6 +19,7 @@
   "home.transport.wired": "Con cable · USB",
   "home.transport.wireless": "Inalámbrico",
   "home.previous_failure": "Último intento: {reason}",
+  "home.retry": "Volver a conectar",
   "home.step_of": "Paso {step} de {total}",
   "home.streams": "{count} flujos",
   "home.log.title": "Registro de conexión",

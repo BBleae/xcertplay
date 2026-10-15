@@ -18,6 +18,7 @@
   "home.transport.wired": "Wired · USB",
   "home.transport.wireless": "Wireless",
   "home.previous_failure": "Last attempt: {reason}",
+  "home.retry": "Reconnect",
   "home.step_of": "Step {step} of {total}",
   "home.streams": "{count} streams",
   "home.log.title": "Connection log",

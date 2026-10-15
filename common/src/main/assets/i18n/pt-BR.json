@@ -19,6 +19,7 @@
   "home.transport.wired": "Com fio · USB",
   "home.transport.wireless": "Sem fio",
   "home.previous_failure": "Última tentativa: {reason}",
+  "home.retry": "Reconectar",
   "home.step_of": "Etapa {step} de {total}",
   "home.streams": "{count} fluxos",
   "home.log.title": "Registro de conexão",

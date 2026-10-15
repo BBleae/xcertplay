@@ -19,6 +19,7 @@
   "home.transport.wired": "Cablato · USB",
   "home.transport.wireless": "Senza fili",
   "home.previous_failure": "Ultimo tentativo: {reason}",
+  "home.retry": "Riconnetti",
   "home.step_of": "Passaggio {step} di {total}",
   "home.streams": "{count} flussi",
   "home.log.title": "Registro della connessione",

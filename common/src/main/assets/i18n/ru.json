@@ -19,6 +19,7 @@
   "home.transport.wired": "По проводу · USB",
   "home.transport.wireless": "Без провода",
   "home.previous_failure": "Последняя попытка: {reason}",
+  "home.retry": "Переподключить",
   "home.step_of": "Шаг {step} из {total}",
   "home.streams": "Потоков: {count}",
   "home.log.title": "Журнал подключения",

@@ -19,6 +19,7 @@
   "home.transport.wired": "Câble · USB",
   "home.transport.wireless": "Sans fil",
   "home.previous_failure": "Dernière tentative : {reason}",
+  "home.retry": "Reconnecter",
   "home.step_of": "Étape {step} sur {total}",
   "home.streams": "{count} flux",
   "home.log.title": "Journal de connexion",

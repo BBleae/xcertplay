@@ -19,6 +19,7 @@
   "home.transport.wired": "Kabel · USB",
   "home.transport.wireless": "Kabellos",
   "home.previous_failure": "Letzter Versuch: {reason}",
+  "home.retry": "Erneut verbinden",
   "home.step_of": "Schritt {step} von {total}",
   "home.streams": "{count} Streams",
   "home.log.title": "Verbindungsprotokoll",
