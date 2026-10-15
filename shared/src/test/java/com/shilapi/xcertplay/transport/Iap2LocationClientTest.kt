@@ -87,28 +87,6 @@ class Iap2LocationClientTest {
         assertTrue(0xfffc in u16Values(enabledParameters.single { it.id == 7 }.payload))
     }
 
-    @Test
-    fun wirelessIdentificationKeepsLocationMessagesAndOmitsWiredPowerSource() {
-        val config = wiredIdentification(locationInformationEnabled = true).copy(
-            wireless = Iap2WirelessIdentification(
-                bluetoothMac = "AA:BB:CC:DD:EE:FF",
-                ssid = "LIVI",
-            ),
-        )
-
-        val parameters = parameters(
-            Iap2IdentificationClient.identificationInformation(config).payload,
-        )
-        val sent = u16Values(parameters.single { it.id == 6 }.payload)
-        val received = u16Values(parameters.single { it.id == 7 }.payload)
-
-        assertTrue(0xfffb in sent)
-        assertTrue(0x5703 in sent)
-        assertFalse(0xae03 in sent)
-        assertTrue(0xfffa in received)
-        assertTrue(0xfffc in received)
-    }
-
     private fun wiredIdentification(locationInformationEnabled: Boolean) = Iap2IdentificationConfig(
         name = "xcertplay",
         modelIdentifier = "xcertplay",

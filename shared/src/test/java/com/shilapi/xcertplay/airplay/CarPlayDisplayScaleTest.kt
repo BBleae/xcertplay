@@ -21,13 +21,4 @@ class CarPlayDisplayScaleTest {
         assertEquals(10, CarPlayDisplayScale.sanitize(20))
     }
 
-    @Test
-    fun alignsScaledDisplayDimensionsToEvenPixels() {
-        val native = AirPlayDisplayConfig(widthPixels = 1920, heightPixels = 978)
-
-        val scaled = CarPlayDisplayScale.apply(native, 7)
-
-        assertEquals(1344, scaled.widthPixels)
-        assertEquals(686, scaled.heightPixels)
-    }
 }

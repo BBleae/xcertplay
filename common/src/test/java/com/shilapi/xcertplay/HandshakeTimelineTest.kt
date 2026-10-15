@@ -100,6 +100,31 @@ class HandshakeTimelineTest {
     }
 
     @Test
+    fun clusterSessionNegotiatesAltScreenAndBringsUpEveryStream() {
+        val timeline = replay("handshake-wireless-cluster.txt")
+
+        assertNull(timeline.failure)
+        timeline.phases.forEach { assertEquals(it.label, State.DONE, it.state) }
+        assertEquals(LinkState.RELEASED, link(timeline, LinkKind.RFCOMM))
+        assertEquals(LinkState.UP, link(timeline, LinkKind.TUNNEL))
+        val chips = timeline.groups.flatMap { it.rows }.first { it.name.startsWith("Features:") }.chips
+        assertEquals(
+            listOf("uiContext", "viewAreas", "altScreen", "hevc", "iAPChannel"),
+            chips.filter { it.state == ChipState.OK }.map { it.label },
+        )
+        assertEquals(
+            listOf("type 111 · cluster screen", "type 110 · main screen"),
+            timeline.groups.first { it.title == HandshakeTimeline.G_STREAMS }.rows.map { it.name },
+        )
+        assertEquals("dataPort 37511 · streamID 1",
+            timeline.groups.first { it.title == HandshakeTimeline.G_TUNNEL_STREAM }.rows.first().reply?.meaning)
+        assertEquals("StartLocationInformation",
+            timeline.groups.single { it.phase.kind == PhaseKind.HANDOFF && it.rows.any { r -> r.code == "0xfffa" } }.rows.single().name)
+        // A plain CarPlay phone without Ultra identification gets no Ultra warning.
+        assertTrue(timeline.groups.flatMap { it.rows }.none { it.warning })
+    }
+
+    @Test
     fun waitingForIphoneIsReportedWhileInProgress() {
         val timeline = HandshakeTimeline(wireless = true, startedAtMillis = 0)
         lines("handshake-wireless.txt").takeWhile { !it.second.startsWith("wireless RFCOMM connected") }

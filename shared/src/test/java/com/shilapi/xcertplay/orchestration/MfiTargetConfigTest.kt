@@ -8,47 +8,22 @@ import org.junit.Test
 
 class MfiTargetConfigTest {
     @Test
-    fun usbTargetRequiresACh341Device() {
-        assertThrows(IllegalArgumentException::class.java) {
-            config(mfiTarget = MfiTarget.USB_CH341)
-        }
+    fun eachTargetRejectsAMissingDevice() {
+        assertThrows(IllegalArgumentException::class.java) { config(mfiTarget = MfiTarget.USB_CH341) }
+        assertThrows(IllegalArgumentException::class.java) { config(mfiTarget = MfiTarget.I2C, linuxI2cPath = "  ") }
+        assertThrows(IllegalArgumentException::class.java) { config(mfiTarget = MfiTarget.REMOTE, remoteMfiServer = "  ") }
     }
 
     @Test
-    fun i2cTargetUsesTheConfiguredDevicePath() {
-        val config = config(
-            mfiTarget = MfiTarget.I2C,
-            linuxI2cPath = "/dev/i2c-7",
-        )
-
-        assertEquals("/dev/i2c-7", config.linuxI2cPath)
-    }
-
-    @Test
-    fun i2cTargetRejectsABlankDevicePath() {
-        assertThrows(IllegalArgumentException::class.java) {
-            config(mfiTarget = MfiTarget.I2C, linuxI2cPath = "  ")
-        }
-    }
-
-    @Test
-    fun remoteTargetDoesNotRequireALocalDevice() {
-        val config = config(
+    fun validTargetsKeepTheirDeviceSettings() {
+        assertEquals("/dev/i2c-7", config(mfiTarget = MfiTarget.I2C, linuxI2cPath = "/dev/i2c-7").linuxI2cPath)
+        val remote = config(
             mfiTarget = MfiTarget.REMOTE,
             remoteMfiServer = "https://mfi.example.test",
             remoteMfiToken = "secret",
         )
-
-        assertEquals(MfiTarget.REMOTE, config.mfiTarget)
-        assertEquals("https://mfi.example.test", config.remoteMfiServer)
-        assertEquals("secret", config.remoteMfiToken)
-    }
-
-    @Test
-    fun remoteTargetRequiresAServerAddress() {
-        assertThrows(IllegalArgumentException::class.java) {
-            config(mfiTarget = MfiTarget.REMOTE, remoteMfiServer = "  ")
-        }
+        assertEquals("https://mfi.example.test", remote.remoteMfiServer)
+        assertEquals("secret", remote.remoteMfiToken)
     }
 
     private fun config(

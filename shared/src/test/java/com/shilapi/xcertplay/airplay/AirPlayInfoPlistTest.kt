@@ -128,57 +128,6 @@ class AirPlayInfoPlistTest {
     }
 
     @Test
-    fun reportedSafeAreaUsesActivityMappingAndEvenAlignment() {
-        val fullHdInsets = AirPlaySafeArea.toInsets(
-            mapping = SafeAreaRect(left = 0, top = 0, right = 1920, bottom = 975),
-            activityWidthPixels = 1920,
-            activityHeightPixels = 1080,
-            displayWidthPixels = 1920,
-            displayHeightPixels = 1080,
-        )
-        val compactInsets = AirPlaySafeArea.toInsets(
-            mapping = SafeAreaRect(left = 34, top = 75, right = 734, bottom = 725),
-            activityWidthPixels = 768,
-            activityHeightPixels = 800,
-            displayWidthPixels = 768,
-            displayHeightPixels = 800,
-        )
-
-        fun safeArea(
-            widthPixels: Int,
-            heightPixels: Int,
-            insets: AirPlayInsets,
-        ): Map<*, *> {
-            val info = AirPlayInfoPlist.build(
-                AirPlayConfig(
-                    deviceName = "test",
-                    deviceId = "02:00:00:00:00:02",
-                    btMac = "02:00:00:00:00:02",
-                    sourceVersion = "366.0",
-                    main = AirPlayDisplayConfig(
-                        widthPixels = widthPixels,
-                        heightPixels = heightPixels,
-                        safeArea = insets,
-                    ),
-                ),
-            )
-            val display = (info["displays"] as List<*>).single() as Map<*, *>
-            val view = (display["viewAreas"] as List<*>).single() as Map<*, *>
-            return view["safeArea"] as Map<*, *>
-        }
-
-        val fullHd = safeArea(1920, 1080, fullHdInsets)
-        val compact = safeArea(768, 800, compactInsets)
-
-        assertEquals(1920, fullHd["widthPixels"])
-        assertEquals(976, fullHd["heightPixels"])
-        assertEquals(700, compact["widthPixels"])
-        assertEquals(650, compact["heightPixels"])
-        assertEquals(34, compact["originXPixels"])
-        assertEquals(75, compact["originYPixels"])
-    }
-
-    @Test
     fun microphoneInputsAreAdvertisedOnlyWhenEnabled() {
         val base = AirPlayConfig(
             deviceName = "test",

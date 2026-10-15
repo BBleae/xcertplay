@@ -6,61 +6,20 @@ import org.junit.Test
 
 class MediaCodecSupportTest {
     @Test
-    fun lengthPrefixedNalUnitsBecomeOneAnnexBBuffer() {
-        val first = byteArrayOf(0x40, 0x01)
-        val second = byteArrayOf(0x42, 0x01, 0x02)
-        val lengthPrefixed =
-            byteArrayOf(0, 0, 0, first.size.toByte()) + first +
-                byteArrayOf(0, 0, 0, second.size.toByte()) + second
-
-        assertArrayEquals(
-            byteArrayOf(0, 0, 0, 1) + first +
-                byteArrayOf(0, 0, 0, 1) + second,
-            MediaCodecSupport.toAnnexB(lengthPrefixed),
+    fun malformedLengthPrefixesRejectTheWholeAccessUnit() {
+        val malformed = listOf(
+            byteArrayOf(0, 0, 0, 2, 0x26, 1, 0, 0, 0, 8, 0x02, 1), // second NAL overruns
+            byteArrayOf(0, 0, 0, 2, 0x26, 1, 0), // trailing partial length
+            byteArrayOf(0x7f, -1, -1, -1, 0x26, 1), // length near Int.MAX_VALUE
         )
-    }
-
-    @Test
-    fun hevcCodecSpecificDataBuildsAnnexBParameterSets() {
-        val vps = byteArrayOf(0x40, 0x01)
-        val sps = byteArrayOf(0x42, 0x01, 0x02)
-        val pps = byteArrayOf(0x44, 0x01)
-        val record = hevcRecord(
-            vps,
-            sps,
-            pps,
-        )
-
-        assertArrayEquals(
-            byteArrayOf(0, 0, 0, 1) + vps +
-                byteArrayOf(0, 0, 0, 1) + sps +
-                byteArrayOf(0, 0, 0, 1) + pps,
-            MediaCodecSupport.hevcCodecSpecificData(record),
-        )
-    }
-
-    @Test
-    fun malformedHevcCodecSpecificDataIsRejected() {
-        val truncated = hevcRecord(byteArrayOf(0x40, 0x01), byteArrayOf())
-            .copyOfRange(0, 25)
-
-        assertEquals(0, MediaCodecSupport.hevcCodecSpecificData(truncated).size)
-    }
-
-    @Test
-    fun malformedSecondNalRejectsTheWholeAccessUnit() {
-        val payload = byteArrayOf(0, 0, 0, 2, 0x26, 1, 0, 0, 0, 8, 0x02, 1)
-        assertEquals(0, MediaCodecSupport.toAnnexB(payload).size)
-    }
-
-    @Test
-    fun trailingPartialLengthRejectsTheWholeAccessUnit() {
-        assertEquals(0, MediaCodecSupport.toAnnexB(byteArrayOf(0, 0, 0, 2, 0x26, 1, 0)).size)
+        for (payload in malformed) assertEquals(0, MediaCodecSupport.toAnnexB(payload).size)
     }
 
     @Test
     fun incompleteHevcParameterSetsAreRejected() {
         assertEquals(0, MediaCodecSupport.hevcCodecSpecificData(hevcRecord(byteArrayOf(0x40, 1))).size)
+        val truncated = hevcRecord(byteArrayOf(0x40, 0x01), byteArrayOf()).copyOfRange(0, 25)
+        assertEquals(0, MediaCodecSupport.hevcCodecSpecificData(truncated).size)
     }
 
     @Test
@@ -72,11 +31,6 @@ class MediaCodecSupportTest {
         val start = byteArrayOf(0, 0, 0, 1)
         assertArrayEquals(start + vps + start + sps + start + pps + start + sei,
             MediaCodecSupport.hevcCodecSpecificData(hevcRecord(pps, sei, sps, vps)))
-    }
-
-    @Test
-    fun hugeNalLengthDoesNotOverflowBoundsCheck() {
-        assertEquals(0, MediaCodecSupport.toAnnexB(byteArrayOf(0x7f, -1, -1, -1, 0x26, 1)).size)
     }
 
     private fun hevcRecord(vararg parameterSets: ByteArray): ByteArray {

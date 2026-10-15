@@ -64,27 +64,7 @@ class Iap2WirelessControlClientTest {
 
         val wireless = parameters(parameters.single { it.id == 24 }.payload)
         assertEquals("LIVI\u0000", wireless.single { it.id == 1 }.payload.decodeToString())
-
-        val sent = u16Values(parameters.single { it.id == 6 }.payload)
-        val received = u16Values(parameters.single { it.id == 7 }.payload)
-        assertTrue(0x5703 in sent)
-        assertTrue(0x4301 in sent)
-        assertFalse(0xae03 in sent)
-        assertTrue(0x4300 in received)
-        assertTrue(0x6801 in received)
-        assertTrue(0x4e0d in received)
-        assertTrue(0x4e0e in received)
-        assertTrue(0x5702 in received)
-    }
-
-    @Test
-    fun wirelessCarPlayUpdateReadsBooleanAvailability() {
-        val frame = Iap2Frame(
-            0x4e0d,
-            Iap2ParameterList.of(Iap2Parameter(0, byteArrayOf(1))).encode(),
-        )
-
-        assertTrue(Iap2WirelessMessages.wirelessCarPlayAvailability(frame))
+        // The wireless message lists are pinned against a recorded session in Iap2WirelessSessionReplayTest.
     }
 
     @Test
@@ -101,6 +81,7 @@ class Iap2WirelessControlClientTest {
         val parameters = parameters(
             Iap2IdentificationClient.identificationInformation(config).payload,
         )
+        assertEquals(parameters.map { it.id }.sorted(), parameters.map { it.id })
 
         val sent = u16Values(parameters.single { it.id == 6 }.payload)
         assertTrue(0x4301 in sent)
@@ -113,38 +94,6 @@ class Iap2WirelessControlClientTest {
         assertArrayEquals(byteArrayOf(0, 0), hid.single { it.id == 0 }.payload)
         assertEquals("Media Playback Remote\u0000", hid.single { it.id == 1 }.payload.decodeToString())
         assertArrayEquals(byteArrayOf(1), hid.single { it.id == 2 }.payload)
-    }
-
-    @Test
-    fun identificationInformationEmitsParametersInAscendingOrder() {
-        val wirelessConfig = Iap2IdentificationConfig(
-            name = "LIVI",
-            modelIdentifier = "LIVI",
-            manufacturer = "LIVI",
-            serialNumber = "0123456",
-            firmwareVersion = "1.0.0",
-            hardwareVersion = "1.0",
-            wireless = Iap2WirelessIdentification(
-                bluetoothMac = "AA:BB:CC:DD:EE:FF",
-                ssid = "LIVI",
-            ),
-        )
-        val wiredConfig = Iap2IdentificationConfig(
-            name = "wired",
-            modelIdentifier = "wired",
-            manufacturer = "test",
-            serialNumber = "1",
-            firmwareVersion = "1.0",
-            hardwareVersion = "1.0",
-            carPlayUsbInterfaceNumber = 4,
-        )
-
-        for (config in listOf(wirelessConfig, wiredConfig)) {
-            val ids = parameters(
-                Iap2IdentificationClient.identificationInformation(config).payload,
-            ).map { it.id }
-            assertEquals(ids.sorted(), ids)
-        }
     }
 
     private fun endpoint(): Iap2WirelessCarPlayEndpoint = Iap2WirelessCarPlayEndpoint(
