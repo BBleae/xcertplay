@@ -15,7 +15,7 @@ interface MediaSink {
     fun onVideoCodec(type: Int, codec: VideoCodec) {}
     fun onVideoRecoveryHandler(type: Int, requestKeyFrame: (() -> Boolean)?) {}
     fun onVideoConfig(type: Int, codecData: ByteArray) {}
-    fun onVideoFrame(type: Int, naluBytes: ByteArray) {}
+    fun onVideoFrame(type: Int, accessUnit: VideoAccessUnit) { accessUnit.close() }
     fun onScreenStreamActive(type: Int, active: Boolean) {}
     fun onAudioStarted(type: Int, format: AudioFormat, firstSample: Int) {}
     fun onAudioRtp(type: Int, format: AudioFormat, rtp: ByteArray, sample: Int) {}
@@ -34,7 +34,7 @@ class CarPlayMediaEngine(
     private val sink: MediaSink,
     private val microphoneEnabled: Boolean = false,
     private val audioCaptureDirectory: File? = null,
-    private val videoPacketLog: ((Int, VideoCodec, Long, ByteArray, ByteArray, ByteArray?) -> Unit)? = null,
+    private val videoPacketLog: ((Int, VideoCodec, Long, ByteArray, ByteArray, Int, ByteArray?, Int) -> Unit)? = null,
 ) : AirPlayMediaHandler {
     internal data class StreamKey(
         val session: AirPlaySession,
@@ -88,19 +88,24 @@ class CarPlayMediaEngine(
                     streamCodec = codec
                     sink.onVideoCodec(type, codec)
                 }
-                override fun onPacket(sequence: Long, header: ByteArray, wire: ByteArray, plain: ByteArray?) {
-                    videoPacketLog?.invoke(type, streamCodec, sequence, header, wire, plain)
+                override fun onPacket(
+                    sequence: Long, header: ByteArray, wire: ByteArray, wireLength: Int,
+                    plain: ByteArray?, plainLength: Int,
+                ) {
+                    videoPacketLog?.invoke(
+                        type, streamCodec, sequence, header, wire, wireLength, plain, plainLength,
+                    )
                 }
                 override fun onConfig(codecData: ByteArray) {
                     session.logDebug("airplay screen config type=$type codec=$streamCodec bytes=${codecData.size}")
                     sink.onVideoConfig(type, codecData)
                 }
-                override fun onFrame(naluBytes: ByteArray) {
+                override fun onFrame(accessUnit: VideoAccessUnit) {
                     if (!firstFrameLogged) {
                         firstFrameLogged = true
-                        session.logDebug("airplay screen first frame type=$type codec=$streamCodec bytes=${naluBytes.size}")
+                        session.logDebug("airplay screen first frame type=$type codec=$streamCodec bytes=${accessUnit.size}")
                     }
-                    sink.onVideoFrame(type, naluBytes)
+                    sink.onVideoFrame(type, accessUnit)
                 }
                 override fun onClosed(cause: Throwable?) {
                     Log.w(

@@ -2,9 +2,18 @@ package com.shilapi.xcertplay.media
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaCodecSupportTest {
+    @Test
+    fun inPlaceConversionHonorsLogicalLengthInsteadOfBucketCapacity() {
+        val bytes = ByteArray(64)
+        byteArrayOf(0, 0, 0, 3, 0x65, 1, 2).copyInto(bytes)
+
+        assertTrue(MediaCodecSupport.toAnnexBInPlace(bytes, 7))
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x65, 1, 2), bytes.copyOf(7))
+    }
     @Test
     fun malformedLengthPrefixesRejectTheWholeAccessUnit() {
         val malformed = listOf(

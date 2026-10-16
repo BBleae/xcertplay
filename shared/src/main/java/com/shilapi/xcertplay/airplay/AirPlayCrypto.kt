@@ -117,6 +117,33 @@ object AirPlayCrypto {
         return if (outputLength == output.size) output else output.copyOf(outputLength)
     }
 
+    /** Reusable high-rate decryptor; [ChaCha20Poly1305] construction is otherwise costly per frame. */
+    class ChaChaOpener(key: ByteArray) {
+        private val cipher = ChaCha20Poly1305()
+        private val keyParameter = KeyParameter(key.copyOf())
+        private val nonce = ByteArray(NONCE_SIZE)
+
+        fun open(
+            counter: Long,
+            ciphertextAndTag: ByteArray,
+            ciphertextLength: Int,
+            aad: ByteArray,
+            output: ByteArray,
+        ): Int {
+            var value = counter
+            for (index in 4 until NONCE_SIZE) {
+                nonce[index] = value.toByte()
+                value = value ushr 8
+            }
+            require(ciphertextLength in 0..ciphertextAndTag.size)
+            // Conscrypt buffers complete AEAD input and allocates a result even for its
+            // caller-output overload. BC writes directly into the recycled output buffer.
+            cipher.init(false, AEADParameters(keyParameter, MAC_BITS, nonce, aad))
+            val processed = cipher.processBytes(ciphertextAndTag, 0, ciphertextLength, output, 0)
+            return processed + cipher.doFinal(output, processed)
+        }
+    }
+
     /** A platform decrypt cipher initialized for [key]/[nonce], or null to use BouncyCastle. */
     private fun platformCipher(key: ByteArray, nonce: ByteArray): Cipher? {
         if (!platformChaChaAvailable) return null
