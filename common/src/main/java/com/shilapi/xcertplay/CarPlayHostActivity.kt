@@ -22,6 +22,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Log
@@ -120,6 +121,7 @@ import com.shilapi.xcertplay.ui.components.Banner
 import com.shilapi.xcertplay.ui.components.BannerKind
 import com.shilapi.xcertplay.ui.components.FieldRow
 import com.shilapi.xcertplay.ui.components.HelpText
+import com.shilapi.xcertplay.ui.components.IconVectors
 import com.shilapi.xcertplay.ui.components.KeyValueList
 import com.shilapi.xcertplay.ui.components.LargeTopBar
 import com.shilapi.xcertplay.ui.components.LinearMeter
@@ -138,6 +140,7 @@ import com.shilapi.xcertplay.ui.components.StatusPill
 import com.shilapi.xcertplay.ui.components.SwitchRow
 import com.shilapi.xcertplay.ui.components.TrailingValue
 import com.shilapi.xcertplay.ui.components.tabular
+import com.shilapi.xcertplay.ui.home.HOME_SCREEN_ICONS
 import com.shilapi.xcertplay.ui.home.HomeScreen
 import com.shilapi.xcertplay.ui.home.StreamingLogOverlay
 import com.shilapi.xcertplay.ui.i18n.I18n
@@ -378,7 +381,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var connectionStatus by mutableStateOf("Preparing CarPlay")
     private var handshakeTimeline by mutableStateOf<HandshakeTimeline?>(null)
     private var timelineRevision by mutableIntStateOf(0)
-    private var timelineRenderScheduled = false
+    private var timelineDirty = false
     private var lastAttemptFailure: String? = null
     private var configSummary by mutableStateOf<List<Pair<String, String>>>(emptyList())
     private var manualHotspotError by mutableStateOf<String?>(null)
@@ -578,28 +581,52 @@ class CarPlayHostActivity : ComponentActivity() {
             java.util.concurrent.LinkedBlockingQueue(),
         ).apply { allowCoreThreadTimeOut(true) }
     private val logLines = ScreenLogBuffer(MAX_SCREEN_LOG_LINES)
+    // Log receipt and log display are decoupled: any thread only queues records, and the UI
+    // takes them in one batch per LOG_FRAME_MILLIS, however fast the session logs.
     private val pendingScreenLogs = ArrayDeque<PendingLog>()
+    private val pendingHandshakeLogs = ArrayDeque<PendingRecord>()
     private val pendingScreenLogsLock = Any()
-    private var screenDrainPosted = false
-    private val drainScreenLogs = Runnable {
-        val pending = synchronized(pendingScreenLogsLock) {
-            screenDrainPosted = false
-            pendingScreenLogs.toList().also { pendingScreenLogs.clear() }
+    private var logFrameScheduled = false
+    @Volatile private var lastLogFrameAt = 0L
+    private var lastTimelinePublishAt = 0L
+    private var inLogFrame = false
+    private var screenLogsDirty = false
+    private val logFrame = Runnable {
+        val (handshake, screen) = synchronized(pendingScreenLogsLock) {
+            logFrameScheduled = false
+            (pendingHandshakeLogs.toList() to pendingScreenLogs.toList()).also {
+                pendingHandshakeLogs.clear()
+                pendingScreenLogs.clear()
+            }
         }
-        if (debugLogsEnabled && !menuOpen) {
-            pending.forEach { entry ->
-                if (entry.generation == restartGeneration) {
-                    appendScreenLog(entry.timestampMillis, entry.message)
+        val now = SystemClock.uptimeMillis()
+        lastLogFrameAt = now
+        inLogFrame = true
+        try {
+            handshake.forEach { recordHandshake(it.generation, it.record, it.timestampMillis) }
+            if (debugLogsEnabled && !menuOpen) {
+                screen.forEach { entry ->
+                    if (entry.generation == restartGeneration) {
+                        appendScreenLog(entry.timestampMillis, entry.message)
+                    }
                 }
             }
+        } finally {
+            inLogFrame = false
+        }
+        if (timelineDirty) {
+            timelineDirty = false
+            timelineRevision++
+            lastTimelinePublishAt = now
+        }
+        if (screenLogsDirty) {
+            screenLogsDirty = false
+            refreshLogView(System.currentTimeMillis())
         }
     }
     private val expireOldLogLines = Runnable { refreshLogView(System.currentTimeMillis()) }
-    private var logRenderScheduled = false
-    private val renderLogLines = Runnable {
-        logRenderScheduled = false
-        refreshLogView(System.currentTimeMillis())
-    }
+    private var mainStreamReadyAt = 0L
+    private val revealMainStream = Runnable { maybeRevealMainStream() }
     private val applyDisplaySize = Runnable {
         val size = pendingDisplaySize ?: return@Runnable
         pendingDisplaySize = null
@@ -628,6 +655,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        IconVectors.preload(applicationContext.resources, HOME_SCREEN_ICONS)
         initializeSessionLog()
         I18n.init(this)
         darkMode = isDarkMode(resources.configuration.uiMode)
@@ -871,9 +899,8 @@ class CarPlayHostActivity : ComponentActivity() {
         clusterPreviewSurface?.let { detachSurface(SCREEN_TYPE_ALT, it); it.release() }
         clusterPreviewSurface = null
         mainHandler.removeCallbacks(expireOldLogLines)
-        mainHandler.removeCallbacks(renderLogLines)
-        mainHandler.removeCallbacks(drainScreenLogs)
-        mainHandler.removeCallbacks(publishTimeline)
+        mainHandler.removeCallbacks(logFrame)
+        mainHandler.removeCallbacks(revealMainStream)
         currentSurface?.let { detachSurface(SCREEN_TYPE_MAIN, it) }
         currentSurface = null
         sessionLog.append("Activity destroyed; background session and log remain active")
@@ -1980,19 +2007,17 @@ class CarPlayHostActivity : ComponentActivity() {
             override fun onDebugLog(message: String) {
                 val now = System.currentTimeMillis()
                 appendFileLog(message, now)
-                if (HandshakeTimeline.isRelevant(message)) {
-                    mainHandler.post { recordHandshake(controllerGeneration, message, now) }
-                }
-                if (!debugLogsEnabled) return
-                val summary = ScreenLogPolicy.summary(message) ?: return
+                // Decoded here, on the session thread, so the log frame only updates the model.
+                val handshake = if (HandshakeTimeline.isRelevant(message)) HandshakeTimeline.prepare(message) else null
+                val summary = if (debugLogsEnabled) ScreenLogPolicy.summary(message) else null
+                if (handshake == null && summary == null) return
                 synchronized(pendingScreenLogsLock) {
-                    if (!debugLogsEnabled) return
-                    pendingScreenLogs.addLast(PendingLog(controllerGeneration, now, summary))
-                    if (pendingScreenLogs.size > MAX_SCREEN_LOG_LINES) pendingScreenLogs.removeFirst()
-                    if (!screenDrainPosted) {
-                        screenDrainPosted = true
-                        mainHandler.post(drainScreenLogs)
+                    if (handshake != null) pendingHandshakeLogs.addLast(PendingRecord(controllerGeneration, now, handshake))
+                    if (summary != null && debugLogsEnabled) {
+                        pendingScreenLogs.addLast(PendingLog(controllerGeneration, now, summary))
+                        if (pendingScreenLogs.size > MAX_SCREEN_LOG_LINES) pendingScreenLogs.removeFirst()
                     }
+                    scheduleLogFrameLocked()
                 }
             }
         }
@@ -2552,7 +2577,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun detachSurface(type: Int, surface: Surface) {
         val outputs = CarPlayWebDisplayFactory.find(sink)
-        if (outputs?.owns(type) == true) outputs.preview(type, null) else sink?.clearSurface(type, surface)
+        if (outputs?.owns(type) == true) outputs.releasePreview(type, surface) else sink?.clearSurface(type, surface)
     }
 
     private fun updateWebDisplayPreviews() {
@@ -2767,9 +2792,45 @@ class CarPlayHostActivity : ComponentActivity() {
 
     /** Re-derives what the overlay shows; the Compose layer reads the state set here. */
     private fun updateDebugOverlays() {
-        mainStreamActive = SCREEN_TYPE_MAIN in activeScreenStreamTypes
+        if (SCREEN_TYPE_MAIN !in activeScreenStreamTypes) {
+            mainHandler.removeCallbacks(revealMainStream)
+            mainStreamReadyAt = 0L
+            mainStreamActive = false
+        } else if (!mainStreamActive) {
+            if (mainStreamReadyAt == 0L) mainStreamReadyAt = SystemClock.uptimeMillis()
+            maybeRevealMainStream()
+            return
+        }
         applySystemBarAppearance()
         updateMediaMetricsOverlay()
+    }
+
+    /**
+     * Video replaces the home screen only once the handshake list has shown its last record for
+     * LOG_FRAME_MILLIS, so the final step is seen; a session that never stops logging waits at
+     * most MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS.
+     */
+    private fun maybeRevealMainStream() {
+        mainHandler.removeCallbacks(revealMainStream)
+        if (mainStreamActive || SCREEN_TYPE_MAIN !in activeScreenStreamTypes) return
+        val now = SystemClock.uptimeMillis()
+        val pending = synchronized(pendingScreenLogsLock) { pendingHandshakeLogs.isNotEmpty() }
+        val settledAt = if (pending || timelineDirty) now + LOG_FRAME_MILLIS else lastTimelinePublishAt + LOG_FRAME_MILLIS
+        val revealAt = minOf(settledAt, mainStreamReadyAt + MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS)
+        if (revealAt > now) {
+            mainHandler.postDelayed(revealMainStream, revealAt - now)
+            return
+        }
+        mainStreamReadyAt = 0L
+        mainStreamActive = true
+        applySystemBarAppearance()
+        updateMediaMetricsOverlay()
+    }
+
+    private fun scheduleLogFrameLocked() {
+        if (logFrameScheduled) return
+        logFrameScheduled = true
+        mainHandler.postAtTime(logFrame, maxOf(SystemClock.uptimeMillis(), lastLogFrameAt + LOG_FRAME_MILLIS))
     }
 
     /** Dark bar icons only over our own light surfaces; video and the safe-area editor are dark. */
@@ -2782,22 +2843,16 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun recordHandshake(controllerGeneration: Int, message: String, atMillis: Long) {
+    private fun recordHandshake(controllerGeneration: Int, record: HandshakeTimeline.Prepared, atMillis: Long) {
         if (controllerGeneration != restartGeneration) return
         val timeline = handshakeTimeline ?: return
-        if (timeline.accept(message, atMillis)) notifyTimelineChanged()
+        if (timeline.accept(record, atMillis)) notifyTimelineChanged()
     }
 
-    private val publishTimeline = Runnable {
-        timelineRenderScheduled = false
-        timelineRevision++
-    }
-
-    /** Coalesces bursts of handshake records into one UI update. */
+    /** The next log frame publishes the change, together with whatever else arrived. */
     private fun notifyTimelineChanged() {
-        if (timelineRenderScheduled) return
-        timelineRenderScheduled = true
-        mainHandler.postDelayed(publishTimeline, TIMELINE_RENDER_INTERVAL_MILLIS)
+        timelineDirty = true
+        if (!inLogFrame) synchronized(pendingScreenLogsLock) { scheduleLogFrameLocked() }
     }
 
     private fun failHandshake(title: String, detail: String) {
@@ -2859,10 +2914,8 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun appendScreenLog(timestampMillis: Long, message: String) {
         val summary = ScreenLogPolicy.summary(message) ?: return
         logLines.add(timestampMillis, formattedLogLine(summary, timestampMillis))
-        if (!logRenderScheduled) {
-            logRenderScheduled = true
-            mainHandler.postDelayed(renderLogLines, LOG_RENDER_INTERVAL_MILLIS)
-        }
+        screenLogsDirty = true
+        if (!inLogFrame) synchronized(pendingScreenLogsLock) { scheduleLogFrameLocked() }
     }
 
     private fun appendFileLog(message: String, timestampMillis: Long) =
@@ -2900,13 +2953,10 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun clearScreenLogs() {
         synchronized(pendingScreenLogsLock) {
             pendingScreenLogs.clear()
-            screenDrainPosted = false
         }
-        mainHandler.removeCallbacks(drainScreenLogs)
         logLines.clear()
         mainHandler.removeCallbacks(expireOldLogLines)
-        mainHandler.removeCallbacks(renderLogLines)
-        logRenderScheduled = false
+        screenLogsDirty = false
         screenLogs = emptyList()
     }
 
@@ -4405,7 +4455,9 @@ class CarPlayHostActivity : ComponentActivity() {
         const val CLUSTER_WINDOW_MAX_HEIGHT_FRACTION = 0.35
         const val CLUSTER_WINDOW_MIN_WIDTH_DP = 160
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
-        const val LOG_RENDER_INTERVAL_MILLIS = 100L
+        /** One UI refresh of the handshake list and screen log, however fast records arrive. */
+        const val LOG_FRAME_MILLIS = 200L
+        const val MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS = 1_500L
         const val IDLE_WORKER_KEEP_ALIVE_SECONDS = 30L
         const val MAX_SCREEN_LOG_LINES = 100
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
@@ -4419,7 +4471,6 @@ class CarPlayHostActivity : ComponentActivity() {
         const val THREE_FINGER_COUNT = 3
         const val THREE_FINGER_SWIPE_DISTANCE_DP = 72
         const val THREE_FINGER_SWIPE_DIRECTION_RATIO = 1.15f
-        const val TIMELINE_RENDER_INTERVAL_MILLIS = 120L
         val TWO_PANE_MIN_WIDTH = 720.dp
         val CATEGORY_PANE_WIDTH = 320.dp
         val NO_VIDEO_BACKGROUND = Color.BLACK
@@ -4430,6 +4481,11 @@ class CarPlayHostActivity : ComponentActivity() {
         val generation: Int,
         val timestampMillis: Long,
         val message: String,
+    )
+    private class PendingRecord(
+        val generation: Int,
+        val timestampMillis: Long,
+        val record: HandshakeTimeline.Prepared,
     )
     private data class HotspotStatus(
         val state: String,

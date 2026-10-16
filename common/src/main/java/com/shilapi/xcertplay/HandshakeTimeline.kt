@@ -143,11 +143,17 @@ class HandshakeTimeline(
     private var controlEncrypted = false
     private val updateCounts = mutableMapOf<Group, LinkedHashMap<String, Int>>()
 
+    /** A record whose text decoding is already done, so the receiving thread pays for it. */
+    class Prepared internal constructor(internal val message: String, internal val detail: String?)
+
     /** Applies one progress record. Returns true when the panel needs to redraw. */
-    fun accept(message: String, atMillis: Long): Boolean {
+    fun accept(message: String, atMillis: Long): Boolean = accept(prepare(message), atMillis)
+
+    fun accept(record: Prepared, atMillis: Long): Boolean {
+        val message = record.message
         if (!isRelevant(message)) return false
         val before = revision
-        handle(message.substringBefore('\n'), message, atMillis)
+        handle(message.substringBefore('\n'), record.detail, atMillis)
         if (revision != before) {
             refreshGroupStates()
             if (completedAtMillis == 0L && failure == null && phases.all { it.state == State.DONE || it.state == State.SKIPPED }) completedAtMillis = atMillis
@@ -180,11 +186,11 @@ class HandshakeTimeline(
             ?.let { it to it.awaiting!! }
     }
 
-    private fun handle(line: String, full: String, at: Long) {
+    private fun handle(line: String, detail: String?, at: Long) {
         when {
             line.startsWith("STEP ") -> step(line.removePrefix("STEP "), at)
             line.startsWith("ERROR ") -> fail("Connection failed", line.removePrefix("ERROR ").trim(), at)
-            line.startsWith("IAP2 TX [") || line.startsWith("IAP2 RX [") -> iap2Frame(line, full, at)
+            isIap2Frame(line) -> iap2Frame(line, detail, at)
             line.startsWith("IAP2 READY [") -> iap2Ready(line, at)
             line.startsWith("IAP2 CLOSE [") -> iap2Close(line, at)
             line.startsWith("airplay rx ") -> rtspRequest(line, at)
@@ -395,7 +401,7 @@ class HandshakeTimeline(
         }
     }
 
-    private fun iap2Frame(line: String, full: String, at: Long) {
+    private fun iap2Frame(line: String, detail: String?, at: Long) {
         val match = IAP2_FRAME.find(line) ?: return
         val outgoing = match.groupValues[1] == "TX"
         val context = match.groupValues[2]
@@ -419,7 +425,7 @@ class HandshakeTimeline(
         val row = messageRow(
             phaseKind, title,
             if (outgoing) Direction.ACCESSORY_TO_PHONE else Direction.PHONE_TO_ACCESSORY,
-            Channel.IAP2, code, name, bytes, meaning, protocolDetail(full), at,
+            Channel.IAP2, code, name, bytes, meaning, detail, at,
             tag = tag,
         ) ?: return
         val group = latestGroup ?: return
@@ -434,6 +440,7 @@ class HandshakeTimeline(
             }
             spec?.failure != null -> {
                 row.failed = true
+                row.revision++
                 fail(spec.failure, "$code $name", at)
             }
             outgoing && spec?.awaiting != null -> await(spec.awaiting, at)
@@ -975,6 +982,12 @@ class HandshakeTimeline(
             }
             return text.substring(from, end).trim().ifEmpty { null }
         }
+
+        /** Pure text work for [accept]; safe to call on any thread. */
+        fun prepare(message: String): Prepared =
+            Prepared(message, if (isIap2Frame(message.substringBefore('\n'))) protocolDetail(message) else null)
+
+        private fun isIap2Frame(line: String): Boolean = line.startsWith("IAP2 TX [") || line.startsWith("IAP2 RX [")
 
         internal fun maskMac(text: String): String =
             MAC.replace(text) { "${it.groupValues[1]}:••:••:${it.groupValues[2]}" }

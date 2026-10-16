@@ -74,12 +74,13 @@ class CarPlayMediaEngine(
         val screen = ScreenStream(key)
         var streamCodec = VideoCodec.H264
         var firstFrameLogged = false
-        // The no-display-UUID forceKeyFrame command targets the primary screen.
-        // Do not accidentally restart the main screen when the alternate decoder loses sync.
-        if (type == STREAM_TYPE_MAIN_SCREEN) {
-            sink.onVideoRecoveryHandler(type) {
-                session.sendCommand(mainScreenKeyFrameCommand())
-            }
+        // The no-display-UUID forceKeyFrame command targets the primary screen; any other
+        // screen is addressed by the uuid its SETUP carried, or not asked at all, so the
+        // alternate decoder losing sync never restarts the main screen.
+        val keyFrameCommand = if (type == STREAM_TYPE_MAIN_SCREEN) mainScreenKeyFrameCommand()
+        else (stream["uuid"] as? String)?.takeIf { it.isNotEmpty() }?.let(::screenKeyFrameCommand)
+        if (keyFrameCommand != null) {
+            sink.onVideoRecoveryHandler(type) { session.sendCommand(keyFrameCommand) }
         }
         val port = screen.listen(
             object : ScreenStream.Listener {
@@ -471,3 +472,10 @@ internal fun unsignedPlistInteger(value: Any?): Any = when (value) {
 /** AirPlaySender carEndpoint_forceKeyFrame defaults to the primary stream with empty params. */
 internal fun mainScreenKeyFrameCommand(): Map<String, Any?> =
     linkedMapOf("type" to "forceKeyFrame", "params" to emptyMap<String, Any?>())
+
+/**
+ * AirPlaySender reads params["uuid"] as a CFString (0x25154d538) and, when non-empty, restarts
+ * the bitstream of carEndpoint_getScreenStreamForDisplayUUID instead of the primary stream.
+ */
+internal fun screenKeyFrameCommand(displayUuid: String): Map<String, Any?> =
+    linkedMapOf("type" to "forceKeyFrame", "params" to linkedMapOf("uuid" to displayUuid))

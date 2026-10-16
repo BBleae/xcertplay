@@ -132,14 +132,22 @@ object MediaCodecSupport {
      */
     fun toLengthPrefixed(bytes: ByteArray): ByteArray {
         if (startCodeSize(bytes, 0) != 0) {
-            val units = annexBNalUnits(bytes)
-            val output = ByteArrayOutputStream(bytes.size + units.size)
-            units.forEach { unit ->
-                output.write(byteArrayOf((unit.size ushr 24).toByte(), (unit.size ushr 16).toByte(),
-                    (unit.size ushr 8).toByte(), unit.size.toByte()))
-                output.write(unit)
+            // One output array sized up front: this runs for every forwarded screen frame.
+            val bounds = annexBUnitBounds(bytes) ?: return ByteArray(0)
+            var size = 0
+            for (index in bounds.indices step 2) size += 4 + bounds[index + 1] - bounds[index]
+            val output = ByteArray(size)
+            var position = 0
+            for (index in bounds.indices step 2) {
+                val length = bounds[index + 1] - bounds[index]
+                output[position] = (length ushr 24).toByte()
+                output[position + 1] = (length ushr 16).toByte()
+                output[position + 2] = (length ushr 8).toByte()
+                output[position + 3] = length.toByte()
+                bytes.copyInto(output, position + 4, bounds[index], bounds[index + 1])
+                position += 4 + length
             }
-            return output.toByteArray()
+            return output
         }
         return if (lengthPrefixedHeaders(bytes).isEmpty()) ByteArray(0) else bytes
     }
@@ -162,19 +170,34 @@ object MediaCodecSupport {
 
     /** Raw NAL units from either three- or four-byte Annex B start codes. */
     fun annexBNalUnits(bytes: ByteArray): List<ByteArray> {
-        if (startCodeSize(bytes, 0) == 0) return emptyList()
-        val units = mutableListOf<ByteArray>()
+        val bounds = annexBUnitBounds(bytes) ?: return emptyList()
+        return (bounds.indices step 2).map { bytes.copyOfRange(bounds[it], bounds[it + 1]) }
+    }
+
+    /** The first two bytes (NAL header) of every unit in an Annex B access unit; no payload copies. */
+    fun annexBNalHeaders(bytes: ByteArray): List<ByteArray> {
+        val bounds = annexBUnitBounds(bytes) ?: return emptyList()
+        return (bounds.indices step 2).map { bytes.copyOfRange(bounds[it], minOf(bounds[it] + 2, bounds[it + 1])) }
+    }
+
+    /** Start and end offsets of each Annex B NAL unit, flattened, or null when malformed. */
+    private fun annexBUnitBounds(bytes: ByteArray): IntArray? {
+        if (startCodeSize(bytes, 0) == 0) return null
+        var bounds = IntArray(8)
+        var count = 0
         var cursor = 0
         while (cursor < bytes.size) {
             val prefix = startCodeSize(bytes, cursor)
-            if (prefix == 0) return emptyList()
+            if (prefix == 0) return null
             val start = cursor + prefix
             cursor = start
             while (cursor < bytes.size && startCodeSize(bytes, cursor) == 0) cursor++
-            if (cursor == start) return emptyList()
-            units.add(bytes.copyOfRange(start, cursor))
+            if (cursor == start) return null
+            if (count + 2 > bounds.size) bounds = bounds.copyOf(bounds.size * 2)
+            bounds[count++] = start
+            bounds[count++] = cursor
         }
-        return units
+        return bounds.copyOf(count)
     }
 
     private fun startCodeSize(bytes: ByteArray, offset: Int): Int {

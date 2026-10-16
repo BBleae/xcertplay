@@ -74,9 +74,10 @@ class VideoSyncGate(private val codec: VideoCodec) {
     val waitingForRandomAccess: Boolean get() = waiting
 
     fun accept(annexB: ByteArray): Boolean {
-        val units = MediaCodecSupport.annexBNalUnits(annexB)
-        require(units.isNotEmpty()) { "Empty or malformed video access unit" }
-        return acceptTypes(nalUnitTypes(codec, units))
+        // Only the NAL headers decide; copying every unit would duplicate the whole picture.
+        val headers = MediaCodecSupport.annexBNalHeaders(annexB)
+        require(headers.isNotEmpty()) { "Empty or malformed video access unit" }
+        return acceptTypes(nalUnitTypes(codec, headers))
     }
 
     /** Same decision as [accept], for callers that already parsed the NAL unit types. */

@@ -29,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Android rendering backend for the CarPlay media engine. Video frames are
@@ -78,7 +79,7 @@ class AndroidMediaSink(
         synchronized(previewLock) {
             val decoder = videoDecoders[type]
             if (decoder != null) decoder.setSurface(surface)
-            else videoConfigs[type]?.let { (codec, data) -> videoDecoder(type).configure(codec, data) }
+            else videoConfigs[type]?.let { (codec, data) -> videoDecoder(type, midStream = true).configure(codec, data) }
         }
     }
 
@@ -136,8 +137,10 @@ class AndroidMediaSink(
             videoDecoder(type).submit(naluBytes, arrivalUs)
             return
         }
-        val accessUnit = MediaCodecSupport.toLengthPrefixed(naluBytes)
-        if (accessUnit.isNotEmpty()) mediaTap?.onVideoFrame(type, accessUnit, arrivalUs)
+        if (mediaTap?.wantsVideoFrames(type) == true) {
+            val accessUnit = MediaCodecSupport.toLengthPrefixed(naluBytes)
+            if (accessUnit.isNotEmpty()) mediaTap.onVideoFrame(type, accessUnit, arrivalUs)
+        }
         // Only a preview decoder created with a Surface may take frames; it never holds them.
         videoDecoders[type]?.submit(naluBytes, arrivalUs)
     }
@@ -194,7 +197,7 @@ class AndroidMediaSink(
         onClosed()
     }
 
-    private fun videoDecoder(type: Int): VideoDecoder =
+    private fun videoDecoder(type: Int, midStream: Boolean = false): VideoDecoder =
         videoDecoders.computeIfAbsent(type) {
             VideoDecoder(
                 surfaces[type] ?: defaultSurface,
@@ -203,6 +206,7 @@ class AndroidMediaSink(
                 preferSoftwareHevcDecoder,
                 mediaMetricsMonitor,
                 requestKeyFrame = { videoRecoveryHandlers[type]?.invoke() ?: false },
+                midStream = midStream,
             )
         }
 
@@ -313,6 +317,8 @@ class AndroidMediaSink(
 private sealed interface VideoJob {
     data class Config(val codec: VideoCodec, val codecData: ByteArray) : VideoJob
     data class Frame(val nalus: ByteArray, val receivedUs: Long) : VideoJob
+    /** Wakes an idle worker to notice a Surface change. */
+    data object Wake : VideoJob
 }
 
 /** Serial MediaCodec video decoder: one worker owns configure and frame feeding. */
@@ -323,6 +329,8 @@ private class VideoDecoder(
     private val preferSoftwareHevcDecoder: Boolean,
     mediaMetricsMonitor: MediaMetricsMonitor?,
     private val requestKeyFrame: () -> Boolean,
+    /** Joining a running stream: the next random access picture may be a GOP away, or never on a static screen. */
+    midStream: Boolean = false,
 ) : Closeable {
     private val queue = VideoWorkQueue<VideoJob>(8)
     @Volatile private var running = true
@@ -330,6 +338,9 @@ private class VideoDecoder(
     private var pump: VideoDecodePump? = null
     private var syncGate: VideoSyncGate? = null
     private var pendingSinceNs = 0L
+    /** Pictures queued to the codec and not yet released; the worker waits on output only for these. */
+    private var inFlight = 0
+    private var lastQueuedNs = 0L
     private var lastPtsUs = 0L
     private var statsStartNs = System.nanoTime()
     private var inputCount = 0
@@ -337,13 +348,14 @@ private class VideoDecoder(
     private var inputRetries = 0
     private var syncSkips = 0
     private var maxOutputAgeUs = 0L
-    private var needsKeyFrame = false
+    private var needsKeyFrame = midStream
     private var lastKeyFrameRequestNs = 0L
     @Volatile private var requestedSurface: Surface? = surface
     @Volatile private var detached: CountDownLatch? = null
     private var outputSurface: Surface? = surface
     private var heldFrame: VideoJob.Frame? = null
     private var lastConfig: VideoJob.Config? = null
+    private val drainInfo = MediaCodec.BufferInfo()
     private var renderedFrameLogged = false
     private var submittedFrameLogged = false
     private var duplicateConfigLogged = false
@@ -367,11 +379,13 @@ private class VideoDecoder(
     fun setSurface(surface: Surface?) {
         if (surface != null || Thread.currentThread() === thread || !thread.isAlive) {
             requestedSurface = surface
+            wake()
             return
         }
         val latch = CountDownLatch(1)
         detached = latch
         requestedSurface = null
+        wake()
         if (!latch.await(SURFACE_DETACH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             Log.w(TAG, "video decoder did not detach from surface within ${SURFACE_DETACH_TIMEOUT_MS}ms")
         }
@@ -385,6 +399,12 @@ private class VideoDecoder(
         running = false
         queue.close()
         thread.interrupt()
+    }
+
+    /** The worker blocks instead of polling, so a Surface change must interrupt its wait. */
+    private fun wake() {
+        queue.control(VideoJob.Wake)
+        LockSupport.unpark(thread)
     }
 
     private fun run() {
@@ -412,17 +432,18 @@ private class VideoDecoder(
                         continue
                     }
                     if (heldFrame != null && outputSurface == null) {
-                        Thread.sleep(5)
+                        // setSurface unparks; the timeout only bounds a missed wake.
+                        LockSupport.parkNanos(IDLE_WAIT_NS)
                         continue
                     }
-                    when (val job = heldFrame ?: queue.poll(5)) {
+                    when (val job = heldFrame ?: nextJob()) {
                         is VideoJob.Config -> configureDecoder(job)
                         is VideoJob.Frame -> {
                             // Preserve the initial random access picture until a Surface exists.
                             heldFrame = if (outputSurface == null) job else null
                             if (outputSurface != null) feed(job)
                         }
-                        null -> Unit
+                        VideoJob.Wake, null -> Unit
                     }
                 } catch (error: InterruptedException) {
                     throw error
@@ -439,6 +460,24 @@ private class VideoDecoder(
             releaseDecoder()
             detached?.countDown()
         }
+    }
+
+    /**
+     * Waits for work without spinning: on the codec while a picture is still decoding (so the
+     * final or only picture of a static screen is rendered promptly), otherwise on the queue.
+     */
+    private fun nextJob(): VideoJob? {
+        queue.poll(0)?.let { return it }
+        val codec = decoder
+        if (codec != null && inFlight > 0) {
+            if (System.nanoTime() - lastQueuedNs < OUTPUT_WAIT_LIMIT_NS) {
+                drainOutput(codec, OUTPUT_WAIT_US)
+                return null
+            }
+            // A picture the codec dropped never comes out; stop waiting on it.
+            inFlight = 0
+        }
+        return queue.poll(IDLE_WAIT_MS)
     }
 
     private fun configureDecoder(config: VideoJob.Config) {
@@ -514,6 +553,8 @@ private class VideoDecoder(
                 input.put(bytes)
                 next.queueInputBuffer(index, 0, bytes.size, presentationTimeUs, 0)
                 inputCount++
+                inFlight++
+                lastQueuedNs = System.nanoTime()
                 return true
             }
         })
@@ -555,6 +596,8 @@ private class VideoDecoder(
             try {
                 codec.setOutputSurface(surface)
                 Log.i(TAG, "video decoder output surface updated")
+                // The new Surface stays empty until the next picture, which a static screen never sends.
+                needsKeyFrame = true
                 return
             } catch (error: Exception) {
                 Log.w(TAG, "video decoder output surface update failed; reconfiguring", error)
@@ -603,10 +646,12 @@ private class VideoDecoder(
         activePump.tick()
     }
 
-    private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+    private fun drainOutput(codec: MediaCodec, firstTimeoutUs: Long = 0) {
+        val info = drainInfo
+        var timeoutUs = firstTimeoutUs
         while (running) {
-            val index = codec.dequeueOutputBuffer(info, 0)
+            val index = codec.dequeueOutputBuffer(info, timeoutUs)
+            timeoutUs = 0
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(codec.outputFormat)
@@ -614,6 +659,7 @@ private class VideoDecoder(
                     val render = outputSurface != null &&
                         info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0
                     outputCount++
+                    if (inFlight > 0) inFlight--
                     maxOutputAgeUs = maxOf(maxOutputAgeUs, System.nanoTime() / 1000 - info.presentationTimeUs)
                     codec.releaseOutputBuffer(index, render)
                     if (render) {
@@ -672,6 +718,7 @@ private class VideoDecoder(
         decoder = null
         pump = null
         syncGate = null
+        inFlight = 0
         if (codec != null) {
             needsKeyFrame = true
             try {
@@ -693,6 +740,13 @@ private class VideoDecoder(
         const val INPUT_STALL_NS = 2_000_000_000L
         const val KEY_FRAME_REQUEST_INTERVAL_NS = 2_000_000_000L
         const val SURFACE_DETACH_TIMEOUT_MS = 1_000L
+        /** Longest single block on the codec, so a newly queued picture is fed without much delay. */
+        const val OUTPUT_WAIT_US = 8_000L
+        /** After this, a queued picture with no output is treated as dropped by the codec. */
+        const val OUTPUT_WAIT_LIMIT_NS = 500_000_000L
+        /** Idle wait; Surface changes and new work wake the worker earlier. */
+        const val IDLE_WAIT_MS = 100L
+        const val IDLE_WAIT_NS = IDLE_WAIT_MS * 1_000_000L
         val START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
     }
 }
