@@ -42,6 +42,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -76,6 +79,7 @@ import androidx.compose.material3.Surface as M3Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -89,6 +93,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
@@ -3004,11 +3009,21 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun HostOverlay() {
+        // The home screen stays composed while it fades out over the video already decoding below.
+        val homeAlpha = remember { Animatable(if (mainStreamActive) 0f else 1f) }
+        LaunchedEffect(mainStreamActive) {
+            if (mainStreamActive) {
+                homeAlpha.animateTo(0f, tween(STREAM_REVEAL_FADE_MILLIS, easing = LinearEasing))
+            } else {
+                homeAlpha.snapTo(1f)
+            }
+        }
+        val homeVisible = !mainStreamActive || homeAlpha.targetValue != 0f || homeAlpha.isRunning
         Box(Modifier.fillMaxSize()) {
             when {
                 safeAreaEditorActive -> SafeAreaEditorChrome()
                 menuOpen -> SettingsScreen()
-                !mainStreamActive -> HomeScreen(
+                homeVisible -> HomeScreen(
                     timeline = handshakeTimeline,
                     revision = timelineRevision,
                     status = connectionStatus,
@@ -3017,6 +3032,8 @@ class CarPlayHostActivity : ComponentActivity() {
                     logLines = screenLogs,
                     onOpenSettings = { openSettingsMenu() },
                     onRetry = if (reconnectExhausted) ::reconnectManually else null,
+                    // Read in the draw phase only: the fade redraws frames without recomposing.
+                    modifier = Modifier.graphicsLayer { alpha = homeAlpha.value },
                 )
                 debugLogsEnabled -> StreamingLogOverlay(screenLogs, Modifier.align(Alignment.BottomStart))
             }
@@ -4458,6 +4475,7 @@ class CarPlayHostActivity : ComponentActivity() {
         /** One UI refresh of the handshake list and screen log, however fast records arrive. */
         const val LOG_FRAME_MILLIS = 200L
         const val MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS = 1_500L
+        const val STREAM_REVEAL_FADE_MILLIS = 200
         const val IDLE_WORKER_KEEP_ALIVE_SECONDS = 30L
         const val MAX_SCREEN_LOG_LINES = 100
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
