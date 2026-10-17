@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.network
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.MacAddress
@@ -47,6 +48,7 @@ class LocalOnlyHotspotManager(context: Context) : WirelessHotspotManager {
      * Starts a LocalOnlyHotspot and waits up to [timeoutMillis] for the live configuration and AP
      * interface. The returned credentials are not retained by this manager.
      */
+    @SuppressLint("MissingPermission")
     override fun start(timeoutMillis: Long): WirelessHotspotInfo {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "LocalOnlyHotspotManager.start must not run on the main thread"

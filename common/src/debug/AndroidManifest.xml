@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Debug-only, explicit-launch harness. It is absent from every release artifact. -->
+        <activity
+            android:name="com.shilapi.xcertplay.SyntheticUltraProfileDebugActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="DEBUG Synthetic CarPlay Ultra"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <!-- Human-operated picker only. It ignores launching Intent data/extras. Debug build only. -->
+        <activity
+            android:name="com.shilapi.xcertplay.bench.BenchUltraProfileStageActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="DEBUG Profile bench"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
+
+</manifest>

@@ -74,11 +74,7 @@ object CarPlayBonjourProtocol {
         require('\r' !in unbracketedHost && '\n' !in unbracketedHost) {
             "host must not contain a line break"
         }
-        val receiverDeviceId = deviceId.replace(":", "")
-        require(receiverDeviceId.isNotEmpty()) { "deviceId must contain a hexadecimal value" }
-        require('\r' !in receiverDeviceId && '\n' !in receiverDeviceId) {
-            "deviceId must not contain a line break"
-        }
+        val receiverDeviceId = macAddressToDecimal(deviceId)
         val hostHeader = if (':' in unbracketedHost) {
             "[$unbracketedHost]:$port"
         } else {
@@ -91,7 +87,19 @@ object CarPlayBonjourProtocol {
             "Connection: close\r\n" +
             "\r\n"
     }
+
+    private fun macAddressToDecimal(value: String): String {
+        val hexadecimal = value.replace(":", "")
+        require(hexadecimal.length == 12 && hexadecimal.all { it.digitToIntOrNull(16) != null }) {
+            "deviceId must contain exactly 12 hexadecimal digits"
+        }
+        return hexadecimal.toLong(16).toString()
+    }
 }
+
+internal fun canBindBonjourProbeTo(local: InetAddress, target: InetAddress): Boolean =
+    (local is Inet6Address && target is Inet6Address) ||
+        (local is Inet4Address && target is Inet4Address)
 
 /**
  * Publishes the accessory AirPlay service and discovers the iPhone's CarPlay control service.
@@ -110,14 +118,22 @@ class CarPlayBonjour(
         .getSystemService(Context.NSD_SERVICE) as NsdManager
     private val services = LinkedBlockingQueue<NsdServiceInfo>()
     private val seenServices = ConcurrentHashMap.newKeySet<String>()
-    private val lifecycleLock = Any()
+    private val lifecycleLock = Object()
+    private val closeAttemptLock = Any()
     private val localAdvertisedAddress = advertisedHostAddress()
 
     private var started = false
     @Volatile
     private var closed = false
+    private var retired = false
+    private var retirementCoordinator: Thread? = null
     private var registrationRequested = false
     private var discoveryRequested = false
+    private var registrationStopRequested = false
+    private var discoveryStopRequested = false
+    private var registrationStopFailure: Exception? = null
+    private var discoveryStopFailure: Exception? = null
+    private var socketRetirementFailure: Exception? = null
     @Volatile
     private var worker: Thread? = null
     @Volatile
@@ -128,27 +144,67 @@ class CarPlayBonjour(
 
         override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
             Log.w(TAG, "AirPlay NSD registration failed code=$errorCode")
+            synchronized(lifecycleLock) {
+                registrationRequested = false
+                registrationStopRequested = false
+                registrationStopFailure = null
+                lifecycleLock.notifyAll()
+            }
         }
 
-        override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit
+        override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
+            synchronized(lifecycleLock) {
+                registrationRequested = false
+                registrationStopRequested = false
+                registrationStopFailure = null
+                lifecycleLock.notifyAll()
+            }
+        }
 
         override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
             Log.w(TAG, "AirPlay NSD unregistration failed code=$errorCode")
+            synchronized(lifecycleLock) {
+                registrationStopRequested = false
+                registrationStopFailure = IOException(
+                    "AirPlay NSD unregistration failed code=$errorCode",
+                )
+                lifecycleLock.notifyAll()
+            }
         }
     }
 
     private val discoveryListener = object : NsdManager.DiscoveryListener {
         override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
             Log.w(TAG, "CarPlay control discovery failed code=$errorCode")
+            synchronized(lifecycleLock) {
+                discoveryRequested = false
+                discoveryStopRequested = false
+                discoveryStopFailure = null
+                lifecycleLock.notifyAll()
+            }
         }
 
         override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
             Log.w(TAG, "CarPlay control discovery stop failed code=$errorCode")
+            synchronized(lifecycleLock) {
+                discoveryStopRequested = false
+                discoveryStopFailure = IOException(
+                    "CarPlay control discovery stop failed code=$errorCode",
+                )
+                lifecycleLock.notifyAll()
+            }
         }
 
         override fun onDiscoveryStarted(serviceType: String) = Unit
 
-        override fun onDiscoveryStopped(serviceType: String) = Unit
+        override fun onDiscoveryStopped(serviceType: String) {
+            synchronized(lifecycleLock) {
+                discoveryRequested = false
+                discoveryStopRequested = false
+                discoveryStopFailure = null
+                lifecycleLock.notifyAll()
+            }
+        }
 
         override fun onServiceFound(serviceInfo: NsdServiceInfo) {
             if (closed) return
@@ -181,48 +237,158 @@ class CarPlayBonjour(
                     discoveryListener,
                 )
                 discoveryRequested = true
-                worker = Thread(::runWorker, WORKER_NAME).apply {
+                val createdWorker = Thread(::runWorker, WORKER_NAME).apply {
                     isDaemon = true
-                    start()
                 }
-            } catch (error: RuntimeException) {
+                startPublishedWorker(createdWorker) { worker = it }
+            } catch (error: Throwable) {
                 closed = true
-                if (registrationRequested) {
-                    registrationRequested = false
-                    runCatching { nsdManager.unregisterService(registrationListener) }
-                }
-                if (discoveryRequested) {
-                    discoveryRequested = false
-                    runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
-                }
                 worker?.interrupt()
-                worker = null
                 throw error
             }
         }
     }
 
     override fun close() {
+        synchronized(closeAttemptLock) closeAttempt@{
+        var failure: Exception? = null
         val workerToJoin: Thread?
+        val socketToClose: Socket?
         synchronized(lifecycleLock) {
-            if (closed) return
+            if (retired) return@closeAttempt
             closed = true
-            if (registrationRequested) {
-                registrationRequested = false
-                runCatching { nsdManager.unregisterService(registrationListener) }
+            if (registrationRequested && !registrationStopRequested) {
+                try {
+                    nsdManager.unregisterService(registrationListener)
+                    registrationStopRequested = true
+                    registrationStopFailure = null
+                } catch (error: Exception) {
+                    registrationStopFailure = error
+                    failure = combineCloseFailure(failure, error)
+                }
             }
-            if (discoveryRequested) {
-                discoveryRequested = false
-                runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
+            if (discoveryRequested && !discoveryStopRequested) {
+                try {
+                    nsdManager.stopServiceDiscovery(discoveryListener)
+                    discoveryStopRequested = true
+                    discoveryStopFailure = null
+                } catch (error: Exception) {
+                    discoveryStopFailure = error
+                    failure = combineCloseFailure(failure, error)
+                }
             }
-            activeSocket?.let { socket -> runCatching { socket.close() } }
-            activeSocket = null
             services.clear()
             workerToJoin = worker
-            worker = null
+            socketToClose = activeSocket
             workerToJoin?.interrupt()
         }
-        workerToJoin?.let(::joinWorker)
+        if (socketToClose != null) {
+            try {
+                socketToClose.close()
+                synchronized(lifecycleLock) {
+                    if (ownsBonjourSocket(activeSocket, socketToClose)) {
+                        activeSocket = null
+                        socketRetirementFailure = null
+                    }
+                }
+            } catch (error: Exception) {
+                val retained = synchronized(lifecycleLock) {
+                    socketRetirementFailure = retainBonjourSocketCloseFailure(
+                        activeSocket,
+                        socketToClose,
+                        socketRetirementFailure,
+                        error,
+                    )
+                    ownsBonjourSocket(activeSocket, socketToClose)
+                }
+                if (retained) failure = combineCloseFailure(failure, error)
+            }
+        }
+        if (workerToJoin === Thread.currentThread()) {
+            val deferred = IOException(
+                "CarPlay Bonjour retirement was deferred until its worker exits",
+            )
+            failure?.let { if (it !== deferred) deferred.addSuppressed(it) }
+            scheduleDeferredRetirement()
+            throw deferred
+        }
+        try {
+            workerToJoin?.let(::joinWorkerStrict)
+            synchronized(lifecycleLock) {
+                if (worker === workerToJoin) worker = null
+            }
+        } catch (error: Exception) {
+            failure = combineCloseFailure(failure, error)
+        }
+        try {
+            awaitNsdRetirement()
+        } catch (error: Exception) {
+            failure = combineCloseFailure(failure, error)
+        }
+        synchronized(lifecycleLock) {
+            registrationStopFailure?.let { failure = combineCloseFailure(failure, it) }
+            discoveryStopFailure?.let { failure = combineCloseFailure(failure, it) }
+            socketRetirementFailure?.let { failure = combineCloseFailure(failure, it) }
+        }
+        if (failure == null) {
+            synchronized(lifecycleLock) {
+                if (worker != null || activeSocket != null ||
+                    registrationRequested || discoveryRequested
+                ) {
+                    failure = IOException("CarPlay Bonjour retirement remains unproven")
+                } else {
+                    retired = true
+                }
+            }
+        }
+        failure?.let { throw it }
+        }
+    }
+
+    private fun scheduleDeferredRetirement() {
+        val coordinator = synchronized(lifecycleLock) {
+            retirementCoordinator
+                ?.takeUnless { it.state == Thread.State.TERMINATED }
+                ?.let { return }
+            Thread(
+                {
+                    var delayMillis = DEFERRED_RETRY_INITIAL_MILLIS
+                    try {
+                        while (true) {
+                            try {
+                                close()
+                                return@Thread
+                            } catch (_: Exception) {
+                                // Keep the exact NSD/socket/worker owners and retry externally.
+                            }
+                            try {
+                                Thread.sleep(delayMillis)
+                            } catch (_: InterruptedException) {
+                                // Interruption accelerates the next retry.
+                            }
+                            delayMillis = (delayMillis * 2).coerceAtMost(
+                                DEFERRED_RETRY_MAX_MILLIS,
+                            )
+                        }
+                    } finally {
+                        synchronized(lifecycleLock) {
+                            if (retirementCoordinator === Thread.currentThread()) {
+                                retirementCoordinator = null
+                            }
+                        }
+                    }
+                },
+                "carplay-bonjour-retirement",
+            ).apply { isDaemon = true }.also { retirementCoordinator = it }
+        }
+        try {
+            coordinator.start()
+        } catch (failure: Throwable) {
+            synchronized(lifecycleLock) {
+                if (retirementCoordinator === coordinator) retirementCoordinator = null
+            }
+            throw failure
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -412,10 +578,13 @@ class CarPlayBonjour(
         val socket = Socket()
         synchronized(lifecycleLock) {
             check(!closed) { "CarPlayBonjour is closed" }
+            check(activeSocket == null) { "A previous CarPlay Bonjour socket is not retired" }
             activeSocket = socket
         }
         try {
-            localAdvertisedAddress?.let { socket.bind(InetSocketAddress(it, 0)) }
+            localAdvertisedAddress
+                ?.takeIf { canBindBonjourProbeTo(it, address) }
+                ?.let { socket.bind(InetSocketAddress(it, 0)) }
             socket.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MILLIS)
             socket.soTimeout = READ_TIMEOUT_MILLIS
             val host = address.hostAddress
@@ -435,10 +604,25 @@ class CarPlayBonjour(
             return reader.readLine()
                 ?: throw IOException("AirPlay control probe returned no status line")
         } finally {
-            synchronized(lifecycleLock) {
-                if (activeSocket === socket) activeSocket = null
+            try {
+                socket.close()
+                synchronized(lifecycleLock) {
+                    if (ownsBonjourSocket(activeSocket, socket)) {
+                        activeSocket = null
+                        socketRetirementFailure = null
+                    }
+                }
+            } catch (error: Exception) {
+                synchronized(lifecycleLock) {
+                    socketRetirementFailure = retainBonjourSocketCloseFailure(
+                        activeSocket,
+                        socket,
+                        socketRetirementFailure,
+                        error,
+                    )
+                }
+                throw error
             }
-            runCatching { socket.close() }
         }
     }
 
@@ -454,13 +638,37 @@ class CarPlayBonjour(
     private fun decodeTxtValue(value: ByteArray): String =
         String(value, StandardCharsets.UTF_8).trimEnd('\u0000')
 
-    private fun joinWorker(worker: Thread) {
-        if (worker === Thread.currentThread()) return
-        try {
-            worker.join(JOIN_TIMEOUT_MILLIS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+    private fun joinWorkerStrict(worker: Thread) {
+        proveCarPlayBonjourWorkerRetired(worker, JOIN_TIMEOUT_MILLIS)
+    }
+
+    private fun awaitNsdRetirement() {
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(NSD_STOP_TIMEOUT_MILLIS)
+        synchronized(lifecycleLock) {
+            while (registrationRequested || discoveryRequested) {
+                registrationStopFailure?.let { throw it }
+                discoveryStopFailure?.let { throw it }
+                val remainingNanos = deadlineNanos - System.nanoTime()
+                if (remainingNanos <= 0L) {
+                    throw IOException("Timed out waiting for CarPlay Bonjour NSD retirement")
+                }
+                try {
+                    lifecycleLock.wait(
+                        remainingNanos / 1_000_000L,
+                        (remainingNanos % 1_000_000L).toInt(),
+                    )
+                } catch (error: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("Interrupted while waiting for CarPlay Bonjour NSD retirement", error)
+                }
+            }
         }
+    }
+
+    private fun combineCloseFailure(first: Exception?, next: Exception): Exception {
+        if (first == null) return next
+        if (first !== next && first.suppressed.size < 8) first.addSuppressed(next)
+        return first
     }
 
     private companion object {
@@ -477,6 +685,37 @@ class CarPlayBonjour(
         const val CONNECT_TIMEOUT_MILLIS = 3_000
         const val READ_TIMEOUT_MILLIS = 3_000
         const val JOIN_TIMEOUT_MILLIS = 2_000L
+        const val NSD_STOP_TIMEOUT_MILLIS = 2_000L
+        const val DEFERRED_RETRY_INITIAL_MILLIS = 25L
+        const val DEFERRED_RETRY_MAX_MILLIS = 1_000L
         const val FAILURE_NONE = -1
     }
 }
+
+internal fun proveCarPlayBonjourWorkerRetired(worker: Thread, timeoutMillis: Long) {
+    require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+    if (worker === Thread.currentThread()) {
+        throw IOException("CarPlay Bonjour worker cannot prove its own retirement")
+    }
+    try {
+        if (worker.state != Thread.State.NEW) worker.join(timeoutMillis)
+    } catch (error: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw IOException("Interrupted while retiring the CarPlay Bonjour worker", error)
+    }
+    if (worker.isAlive) throw IOException("CarPlay Bonjour worker did not stop before the deadline")
+}
+
+internal fun startPublishedWorker(worker: Thread, publish: (Thread) -> Unit) {
+    publish(worker)
+    worker.start()
+}
+
+internal fun ownsBonjourSocket(active: Socket?, candidate: Socket): Boolean = active === candidate
+
+internal fun retainBonjourSocketCloseFailure(
+    active: Socket?,
+    candidate: Socket,
+    retained: Exception?,
+    failure: Exception,
+): Exception? = if (ownsBonjourSocket(active, candidate)) retained ?: failure else retained

@@ -46,17 +46,53 @@ data class VehicleTelemetrySnapshot(
     companion object {
         const val STANDARD_SPEED = 0x11600207
         const val STANDARD_GEAR = 0x11400400
+        /** User-selected gear; distinct from CURRENT_GEAR used by the existing iAP2 path. */
+        const val STANDARD_GEAR_SELECTION = 0x11400401
         const val STANDARD_OUTSIDE_TEMPERATURE = 0x11600703
     }
 }
 
 /** Backend remains injectable, so permissions and platform failures need no car to test. */
 data class CarPropertyValue(val value: Number, val sourceEventMillis: Long?)
+data class CarPropertyBooleanValue(val value: Boolean, val sourceEventMillis: Long?)
+enum class CarPropertySupport { SUPPORTED, UNSUPPORTED, UNKNOWN }
+
+/** Raw, same-manager acquisition. No caller-provided `parked` Boolean can stand in for this evidence. */
+internal data class VideoParkSensorSnapshot(
+    val sourceIdentity: Any,
+    val sourceGeneration: Long,
+    val sampledAtMillis: Long,
+    val speed: CarPropertyValue,
+    val selectedGear: CarPropertyValue,
+    val parkingBrake: CarPropertyBooleanValue?,
+    val parkingBrakeSupport: CarPropertySupport,
+)
+
 interface ReadOnlyCarPropertyBackend : AutoCloseable {
     val isConnected: Boolean get() = true
     val availabilityReason: String? get() = null
+    /** Changes whenever the exact CarPropertyManager connection changes; null is never trusted. */
+    val sourceIdentity: Any? get() = null
+    /** UNKNOWN includes permission denial and failed support discovery, not just absent data. */
+    val parkingBrakeSupport: CarPropertySupport get() = CarPropertySupport.UNKNOWN
     fun connect(): Boolean
+    /** Legacy/global-property read, equivalent to area ID zero. */
     fun read(propertyId: Int): CarPropertyValue?
+
+    /**
+     * Exact Android Car area read. Legacy backends cannot safely reinterpret a nonzero area as
+     * area zero, so they must fail closed until they implement this overload explicitly.
+     */
+    fun read(propertyId: Int, areaId: Int): CarPropertyValue? {
+        if (areaId != 0) throw UnsupportedOperationException("Backend does not support area-aware Car property reads")
+        return read(propertyId)
+    }
+
+    /** Native Boolean VHAL value; numeric zero/one must not be coerced into parking-brake state. */
+    fun readBoolean(propertyId: Int): CarPropertyBooleanValue? = null
+
+    /** Exact global property/status/type/timestamp check for safety-relevant speed and selection. */
+    fun readVideoParkNumber(propertyId: Int): CarPropertyValue? = null
 }
 
 class CarPropertyDataStore(
@@ -67,15 +103,91 @@ class CarPropertyDataStore(
     private val readings = java.util.concurrent.ConcurrentHashMap<Int, CarPropertyReading>()
     private val failures = java.util.concurrent.ConcurrentHashMap<Int, String>()
     private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+    private val parkLock = Any()
+    private var parkSourceIdentity: Any? = null
+    private var parkSourceGeneration = 0L
+    private var parkSample: VideoParkSensorSnapshot? = null
     @Volatile private var connected = false
     fun connect(): Boolean {
         if (connected) return true
         unavailable.clear()
         failures.clear()
         readings.clear()
+        invalidateVideoParkEvidence()
         connected = backend.connect()
         return connected
     }
+
+    /**
+     * Independent of iAP2 wheel-speed subscriptions. Every sample reads speed, selected gear, and
+     * native Boolean brake from one exact connected backend manager; any read failure drops the
+     * entire sample rather than mixing old and new properties.
+     */
+    internal fun sampleVideoParkEvidence(): VideoParkSensorSnapshot? {
+        val before = backend.sourceIdentity
+        if (!connected || !backend.isConnected || before == null) {
+            invalidateVideoParkEvidence()
+            return null
+        }
+        val generation = synchronized(parkLock) {
+            if (parkSourceIdentity !== before) {
+                parkSourceGeneration = nextParkGeneration(parkSourceGeneration)
+                parkSourceIdentity = before
+                parkSample = null
+            }
+            parkSourceGeneration
+        }
+        val values = try {
+            val speed = backend.readVideoParkNumber(VehicleTelemetrySnapshot.STANDARD_SPEED)
+            val gear = backend.readVideoParkNumber(VehicleTelemetrySnapshot.STANDARD_GEAR_SELECTION)
+            val brake = backend.readBoolean(STANDARD_PARKING_BRAKE_ON)
+            val brakeSupport = backend.parkingBrakeSupport
+            if (speed == null || gear == null) null else VideoParkSensorSnapshot(
+                before, generation, now(), speed, gear, brake, brakeSupport,
+            )
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            null
+        }
+        val after = backend.sourceIdentity
+        return synchronized(parkLock) {
+            if (!connected || !backend.isConnected || after !== before ||
+                parkSourceIdentity !== before || parkSourceGeneration != generation
+            ) {
+                retireVideoParkSourceLocked()
+                null
+            } else {
+                parkSample = values
+                values
+            }
+        }
+    }
+
+    /** Rechecks the live manager identity so a cached P cannot survive a disconnect/rebind. */
+    internal fun latestVideoParkEvidence(): VideoParkSensorSnapshot? {
+        val source = backend.sourceIdentity
+        return synchronized(parkLock) {
+            if (!connected || !backend.isConnected || source == null || source !== parkSourceIdentity) {
+                retireVideoParkSourceLocked()
+                null
+            } else parkSample
+        }
+    }
+
+    internal fun invalidateVideoParkEvidence() = synchronized(parkLock) {
+        retireVideoParkSourceLocked()
+    }
+
+    private fun retireVideoParkSourceLocked() {
+        if (parkSourceIdentity != null || parkSample != null) {
+            parkSourceGeneration = nextParkGeneration(parkSourceGeneration)
+        }
+        parkSourceIdentity = null
+        parkSample = null
+    }
+
+    private fun nextParkGeneration(previous: Long): Long =
+        if (previous == Long.MAX_VALUE) 1L else previous + 1L
     /** A denied/unsupported property is not retried continuously; reconnect resets the policy. */
     fun refresh(ids: Iterable<Int>) {
         if (!connected) return
@@ -109,12 +221,17 @@ class CarPropertyDataStore(
         if (!backend.isConnected) backend.availabilityReason ?: "car property service disconnected" else null,
         failures.toMap())
     override fun close() {
+        connected = false
+        invalidateVideoParkEvidence()
         synchronized(readings) {
-            connected = false
             readings.clear()
             unavailable.clear()
             failures.clear()
         }
         backend.close()
+    }
+
+    private companion object {
+        const val STANDARD_PARKING_BRAKE_ON = 0x11200402
     }
 }

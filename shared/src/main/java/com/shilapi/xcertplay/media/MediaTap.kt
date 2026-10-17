@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.media
 
+import com.shilapi.xcertplay.airplay.ScreenFrameTiming
 import com.shilapi.xcertplay.airplay.VideoCodec
 
 /**
@@ -15,6 +16,11 @@ interface MediaTap {
 
     /** One complete access unit with four-byte NAL length prefixes. */
     fun onVideoFrame(type: Int, accessUnit: ByteArray, arrivalUs: Long) {}
+
+    /** One complete access unit plus the phone's raw presentation timestamp, when present. */
+    fun onVideoFrame(type: Int, accessUnit: ByteArray, timing: ScreenFrameTiming) {
+        onVideoFrame(type, accessUnit, timing.arrivalMonotonicNanos / 1_000L)
+    }
 
     fun onVideoActive(type: Int, active: Boolean) {}
 

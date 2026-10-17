@@ -25,7 +25,33 @@ object AirPlayInfoPlist {
     private const val CONSTRAINT_ANYTIME = 100
 
     fun build(config: AirPlayConfig, enabledFeatures: Set<String>? = null): Map<String, Any?> {
-        val cluster = config.cluster.takeIf { enabledFeatures == null || "altScreen" in enabledFeatures }
+        val local = AirPlayFeatureNegotiation.snapshot(config)
+        val scope = if (enabledFeatures == null) {
+            // The compatibility/default form represents pre-SETUP `/info`: preserve ordinary
+            // HEVC and display behavior, but never leak newly conditional Ultra sidecars.
+            local.infoScope(
+                local.readyFeatureSet.filter {
+                    !it.requiresInfoResponseSidecar || it == AirPlayFeature.HEVC
+                },
+            )
+        } else {
+            local.infoScope(enabledFeatures.mapNotNull(AirPlayFeature::fromWireName))
+        }
+        return build(config, scope)
+    }
+
+    /** Builds `/info` against the feature scope frozen by one [AirPlayFeatureExchange]. */
+    fun build(config: AirPlayConfig, scope: AirPlayInfoFeatureScope): Map<String, Any?> {
+        val cluster = config.cluster.takeIf { scope.includes(AirPlayFeature.ALT_SCREEN) }
+        if (scope.includes(AirPlayFeature.UI_SYNC) &&
+            config.ultra?.readiness?.uiSync?.renderer?.requiresAlternateScreenOutput == true &&
+            cluster == null
+        ) {
+            // A frozen/mismatched scope must not serialize a CLUSTER UI Sync endpoint while
+            // omitting the ALT display and its DDP plug-in. The regular exchange also rejects
+            // this combination before it can become an accepted feature set.
+            throw AirPlayFeatureScopeRevokedException()
+        }
         val displays = arrayListOf<Any?>(
             displayEntry(config.main, STREAM_TYPE_MAIN_SCREEN, MAIN_UUID),
         )
@@ -55,9 +81,27 @@ object AirPlayInfoPlist {
         }
         info["extendedFeatures"] = listOf("vocoderInfo", "enhancedRequestCarUI")
         info["displays"] = displays
-        if (cluster != null && (enabledFeatures == null || "uiContext" in enabledFeatures)) {
+        config.displayPanels?.takeIf {
+            !config.requireMainUiSyncForDisplayPanels ||
+                scope.includes(AirPlayFeature.UI_SYNC) &&
+                AirPlayFeatureNegotiation.snapshot(config).let { local ->
+                    local.mainDdpUiSyncReady && local.isReady(AirPlayFeature.UI_SYNC)
+                }
+        }?.let { panels ->
+            // Validate against the full configured legacy set before feature-scope projection:
+            // a composite panel may project to one stream when altScreen is inactive.
+            panels.validateStandaloneLegacyGeometry(config.main, config.cluster)
+            val configuredUuids = if (config.cluster == null) setOf(MAIN_UUID) else setOf(MAIN_UUID, ALT_UUID)
+            val activeUuids = if (cluster == null) setOf(MAIN_UUID) else configuredUuids
+            panels.toWire(configuredUuids, activeUuids).takeIf { it.isNotEmpty() }?.let {
+                info["displayPanels"] = it
+            }
+        }
+        if (scope.includes(AirPlayFeature.UI_CONTEXT)) {
             info["uiContextLastOnDisplayURLs"] = emptyList<String>()
-            info["uiContextNowOnDisplayURLs"] = listOfNotNull(config.main.initialUrl, cluster.initialUrl)
+            info["uiContextNowOnDisplayURLs"] = listOfNotNull(
+                config.main.initialUrl, cluster?.initialUrl,
+            )
         }
         info["hidDevices"] = listOf(
             AirPlayHid.touchHidDevice(config.main.widthPixels, config.main.heightPixels, MAIN_UUID),
@@ -77,9 +121,15 @@ object AirPlayInfoPlist {
                 )
             }
         }
-        if (config.hevc && (enabledFeatures == null || "hevc" in enabledFeatures)) {
-            info["hevcInfo"] = emptyMap<String, Any?>()
-        }
+        scope.featureSet
+            .filter { it.requiresInfoResponseSidecar }
+            .forEach { feature ->
+                val sidecar = scope.sidecar(feature)
+                    ?: throw IllegalArgumentException(
+                        "Ready AirPlay feature '${feature.wireName}' has no ${feature.infoResponseKey}",
+                    )
+                info[requireNotNull(feature.infoResponseKey)] = sidecar
+            }
         return info
     }
 
@@ -271,10 +321,12 @@ internal object AirPlayDisplayControlFactory {
         Session(config, send, log)
 
     class Session internal constructor(
-        private val config: AirPlayConfig,
+        private var config: AirPlayConfig,
         private val send: (Map<String, Any?>) -> Boolean,
         private val log: (String) -> Unit,
     ) {
+        private var featureExchange = AirPlayFeatureNegotiation.exchange(config)
+        private var scopeFrozen = false
         private var enabled: Set<String>? = null
         private var altUrls = emptyList<String>()
         private val selected = linkedMapOf<String, String>()
@@ -284,6 +336,23 @@ internal object AirPlayDisplayControlFactory {
         private var alternateReady = false
         private var viewAreaIndex = config.main.initialViewArea
         private val viewAreaCount = config.main.viewAreas.size.coerceAtLeast(1)
+
+        /** Rebase only Ultra/panel declarations before the first authenticated feature scope. */
+        @Synchronized fun reconfigureUltra(next: AirPlayConfig) {
+            check(!scopeFrozen && enabled == null) {
+                "AirPlay display capability scope has already been frozen"
+            }
+            require(next.copy(
+                ultra = config.ultra,
+                displayPanels = config.displayPanels,
+                displayPanelsLiveness = config.displayPanelsLiveness,
+            ) == config) {
+                "A connection overlay cannot change ordinary AirPlay display or vehicle identity"
+            }
+            val nextExchange = AirPlayFeatureNegotiation.exchange(next)
+            config = next
+            featureExchange = nextExchange
+        }
 
         @Synchronized fun acceptsViewAreas(): Boolean = "viewAreas" in enabled.orEmpty()
 
@@ -296,28 +365,36 @@ internal object AirPlayDisplayControlFactory {
             return true
         }
 
-        @Synchronized fun negotiate(value: Any?, eventPortAvailable: Boolean): List<String> {
-            val requested = strings(value)
-            val supported = linkedSetOf("viewAreas")
-            if (config.hevc) supported += "hevc"
-            if (eventPortAvailable) {
-                supported += "iAPChannel"
-                if (config.cluster != null) supported += listOf("altScreen", "uiContext")
-            }
-            val accepted = requested.filterTo(linkedSetOf()) { it in supported }
-            // The phone validates these two features together before creating alternate UI.
-            if (("altScreen" in accepted) != ("uiContext" in accepted)) {
-                accepted.removeAll(setOf("altScreen", "uiContext"))
-            }
-            enabled = accepted
-            if ("altScreen" in accepted) {
+        @Synchronized fun negotiate(value: Any?, eventPortAvailable: Boolean): List<String> =
+            negotiate(value, AirPlayTransportReadiness.displayOnly(config, eventPortAvailable))
+
+        /** Allows the session integration to supply the complete, already-probed transport state. */
+        @Synchronized fun negotiate(
+            value: Any?,
+            transport: AirPlayTransportReadiness,
+        ): List<String> {
+            scopeFrozen = true
+            val proposal = featureExchange.negotiate(value, transport)
+            val accepted = proposal.enabledFeatures
+            enabled = accepted.toSet()
+            if (AirPlayFeature.ALT_SCREEN.wireName in accepted) {
                 altUrls.firstOrNull()?.let { select(AirPlayInfoPlist.ALT_UUID, it) }
             }
-            log("airplay SETUP feature proposal requested=$requested supported=$supported enabled=$accepted")
-            return accepted.toList()
+            log(
+                "airplay SETUP feature proposal requested=${proposal.requestedFeatures} " +
+                    "supported=${proposal.capabilities.supportedFeatures} enabled=$accepted",
+            )
+            return accepted
         }
 
-        @Synchronized fun info(request: Map<String, Any?>): Map<String, Any?> {
+        @Synchronized fun info(
+            request: Map<String, Any?>,
+            transport: AirPlayTransportReadiness? = null,
+        ): Map<String, Any?> {
+            if (!config.hasCurrentPhysicalDisplayPanels()) {
+                throw AirPlayFeatureScopeRevokedException()
+            }
+            scopeFrozen = true
             altUrls = strings(request["altScreenURLs"])
             if ("altScreen" in enabled.orEmpty()) {
                 val url = config.cluster?.initialUrl?.takeIf { it in altUrls } ?: altUrls.firstOrNull()
@@ -330,13 +407,32 @@ internal object AirPlayDisplayControlFactory {
                 initialUrl = selected[AirPlayInfoPlist.MAIN_UUID] ?: config.main.initialUrl,
                 initialViewArea = viewAreaIndex,
             )
-            val info = AirPlayInfoPlist.build(config.copy(main = main, cluster = cluster), enabled).toMutableMap()
+            val info = AirPlayInfoPlist.build(
+                config.copy(main = main, cluster = cluster),
+                featureExchange.infoScope(transport),
+            ).toMutableMap()
+            if (!config.hasCurrentPhysicalDisplayPanels()) {
+                throw AirPlayFeatureScopeRevokedException()
+            }
             if ("uiContext" in enabled.orEmpty()) {
                 info["uiContextLastOnDisplayURLs"] = previous.values.distinct()
             }
             log("airplay /info altScreenURLs=$altUrls selected=${selected[AirPlayInfoPlist.ALT_UUID] ?: "none"}")
             // altScreenURLs belongs to the phone's request; never echo it as a response sidecar.
             return info
+        }
+
+        /** Preserve ordinary URL discovery before Pair Verify without freezing Ultra sidecars. */
+        @Synchronized fun discoveryInfo(request: Map<String, Any?>): Map<String, Any?> {
+            if (!config.hasCurrentPhysicalDisplayPanels()) {
+                throw AirPlayFeatureScopeRevokedException()
+            }
+            altUrls = strings(request["altScreenURLs"])
+            return AirPlayInfoPlist.build(config).also {
+                if (!config.hasCurrentPhysicalDisplayPanels()) {
+                    throw AirPlayFeatureScopeRevokedException()
+                }
+            }
         }
 
         @Synchronized fun screenReady(type: Int) {

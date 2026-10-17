@@ -61,4 +61,27 @@ data class AirPlayConfig(
     val model: String = "xcertplay",
     val oemLabel: String = "xcertplay",
     val icons: List<AirPlayIcon> = emptyList(),
+    /**
+     * Optional, explicitly provisioned Ultra capabilities for this control session.
+     *
+     * Appended after the original constructor fields so existing positional callers retain their
+     * source and data-class component ordering. Cluster geometry deliberately remains in [cluster].
+     * [ultra] contains only protocol provisioning and immutable readiness evidence, so ordinary type-111
+     * custom UI behavior and Ultra data channels cannot drift onto two different display
+     * descriptions.
+     */
+    val ultra: AirPlayUltraConfiguration? = null,
+    /**
+     * Explicit physical DDP panels for `/info`. Null leaves legacy CarPlay unchanged. An explicit
+     * list must be nonempty and reference only displays present in that response's feature scope.
+     */
+    val displayPanels: AirPlayPhysicalDisplayPanels? = null,
+    /** Exact process-owned liveness for [displayPanels]; absent is not product DDP readiness. */
+    val displayPanelsLiveness: AirPlayPhysicalDisplayPanelsLiveness? = null,
+    /**
+     * Set by the non-diagnostic AA05 publication path for a physical-panel candidate. At the
+     * actual `/info` serialization, omit DDP panels if MAIN UI Sync readiness has since changed.
+     * False preserves existing explicit callers and the opt-in Debug DDP-only probe.
+     */
+    val requireMainUiSyncForDisplayPanels: Boolean = false,
 )

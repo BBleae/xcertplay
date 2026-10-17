@@ -5,6 +5,7 @@ import android.view.Surface
 import com.shilapi.xcertplay.airplay.AirPlayContact
 import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
 import com.shilapi.xcertplay.airplay.VideoCodec
+import com.shilapi.xcertplay.airplay.rcs.uisync.UiSyncPresentationSource
 import com.shilapi.xcertplay.media.AndroidMediaSink
 import com.shilapi.xcertplay.media.MediaCodecSupport
 import com.shilapi.xcertplay.media.MediaTap
@@ -64,6 +65,174 @@ data class CarPlayWebDisplayConfig(
 }
 
 /**
+ * Retry owner for a server whose start failed before a [CarPlayWebDisplayFactory.Session] existed.
+ * The exact server identity and stop action remain strongly held until [close] succeeds.
+ */
+internal class WebDisplayServerConstructionException private constructor(
+    private val serverIdentity: Any,
+    startFailure: Throwable,
+    private val stopServer: () -> Unit,
+) : IllegalStateException(
+    "WebDisplay server construction cleanup is pending",
+    startFailure.takeUnless { it is Error },
+), Closeable {
+    internal val startFailure: Throwable = startFailure
+    private val closeLock = Any()
+    private var closeOwner: Thread? = null
+    private var cleanupComplete = false
+
+    override fun close() {
+        synchronized(closeLock) {
+            if (cleanupComplete) return
+            val currentThread = Thread.currentThread()
+            check(closeOwner !== currentThread) {
+                "WebDisplay construction cleanup is already in flight on this thread"
+            }
+            check(closeOwner == null) {
+                "WebDisplay construction cleanup owner was not released"
+            }
+            closeOwner = currentThread
+            try {
+                stopServer()
+                cleanupComplete = true
+            } finally {
+                closeOwner = null
+            }
+        }
+    }
+
+    internal fun ownsServer(candidate: Any): Boolean = candidate === serverIdentity
+
+    internal fun isCleanupComplete(): Boolean = synchronized(closeLock) { cleanupComplete }
+
+    internal companion object {
+        fun <T : Any> create(
+            server: T,
+            startFailure: Throwable,
+            stop: (T) -> Unit,
+        ) = WebDisplayServerConstructionException(
+            serverIdentity = server,
+            startFailure = startFailure,
+            stopServer = { stop(server) },
+        )
+    }
+}
+
+/** Starts one exact server or proves that it stopped before propagating the start failure. */
+internal fun <T : Any> startOwnedWebDisplayServer(
+    server: T,
+    start: (T) -> Unit,
+    stop: (T) -> Unit,
+): T {
+    try {
+        start(server)
+        return server
+    } catch (startFailure: Throwable) {
+        val cleanupOwner = WebDisplayServerConstructionException.create(
+            server,
+            startFailure,
+            stop,
+        )
+        val cleanupFailure = try {
+            cleanupOwner.close()
+            null
+        } catch (caught: Throwable) {
+            caught
+        }
+        if (cleanupFailure == null) throw startFailure
+
+        when {
+            startFailure is Error -> {
+                if (cleanupFailure !== startFailure) cleanupOwner.addSuppressed(cleanupFailure)
+                startFailure.addSuppressed(cleanupOwner)
+                throw startFailure
+            }
+            cleanupFailure is Error -> {
+                cleanupFailure.addSuppressed(cleanupOwner)
+                throw cleanupFailure
+            }
+            else -> {
+                if (cleanupFailure !== cleanupOwner) cleanupOwner.addSuppressed(cleanupFailure)
+                throw cleanupOwner
+            }
+        }
+    }
+}
+
+/** Identity-safe preview state; a stale Activity can only clear the Surface it installed. */
+internal class WebDisplayPreviewRoutes {
+    private val current = mutableMapOf<Int, Surface>()
+    private val generations = mutableMapOf<Int, Long>()
+
+    fun currentSurface(type: Int): Surface? = current[type]
+    fun generation(type: Int): Long = generations[type] ?: 0L
+
+    /** Sink restoration already succeeded; never attach over a successor preview. */
+    fun rememberRestoredIfSameGeneration(type: Int, surface: Surface, expected: Long): Boolean {
+        if (current[type] != null || generation(type) != expected) return false
+        current[type] = surface
+        advance(type)
+        return true
+    }
+
+    private fun advance(type: Int) {
+        generations[type] = Math.addExact(generation(type), 1L)
+    }
+
+    fun replace(
+        type: Int,
+        candidate: Surface?,
+        attach: (Surface) -> Unit,
+        detach: (Surface) -> Unit,
+    ) {
+        val prior = current[type]
+        if (prior === candidate) return
+        if (prior != null) {
+            detach(prior)
+            current.remove(type)
+            advance(type)
+        }
+        if (candidate != null) {
+            attach(candidate)
+            current[type] = candidate
+            advance(type)
+        }
+    }
+
+    /**
+     * [attach] atomically replaces the sink's previous type route. A busy candidate must leave
+     * the old visible preview installed; only a null candidate explicitly detaches it.
+     */
+    fun tryReplace(
+        type: Int,
+        candidate: Surface?,
+        attach: (Surface) -> Boolean,
+        detach: (Surface) -> Unit,
+    ): Boolean {
+        val prior = current[type]
+        if (prior === candidate) return true
+        if (candidate != null) {
+            if (!attach(candidate)) return false
+            current[type] = candidate
+            advance(type)
+        } else if (prior != null) {
+            detach(prior)
+            current.remove(type)
+            advance(type)
+        }
+        return true
+    }
+
+    fun clearIfCurrent(type: Int, expected: Surface, detach: (Surface) -> Unit): Boolean {
+        if (current[type] !== expected) return false
+        detach(expected)
+        current.remove(type)
+        advance(type)
+        return true
+    }
+}
+
+/**
  * Creates both displays as one session behind one HTTPS/WebSocket endpoint (HTTPS so browsers
  * expose WebCodecs). The phone's compressed
  * video is forwarded untouched for the browser to decode; the main display also carries decoded
@@ -101,34 +270,273 @@ object CarPlayWebDisplayFactory {
         val channels = enabled.mapValues { (type, config) -> WebDisplayChannel(type, config.width, config.height) }
         val tls = WebDisplayCertificate.sslContext(File(context.noBackupFilesDir, CERTIFICATE_FILE), addresses())
         val server = WebDisplayServer(context.assets.open("carplay-display.html").use { it.readBytes() }, channels, key, sendTouch, tls = tls)
-        server.start(SOCKET_TIMEOUT_MS, true)
+        startOwnedWebDisplayServer(
+            server = server,
+            start = { it.start(SOCKET_TIMEOUT_MS, true) },
+            stop = WebDisplayServer::stop,
+        )
         return Session(configs, channels, server)
     }
 
     class Session internal constructor(
         private val configs: Map<Int, CarPlayWebDisplayConfig>,
         private val displays: Map<Int, WebDisplayChannel>,
-        private val server: WebDisplayServer,
+        private val stopServer: () -> Unit,
     ) : MediaTap, Closeable {
-        private val closed = AtomicBoolean(false)
-        @Volatile private var sink: AndroidMediaSink? = null
-        private val previews = mutableMapOf<Int, Surface>()
+        internal constructor(
+            configs: Map<Int, CarPlayWebDisplayConfig>,
+            displays: Map<Int, WebDisplayChannel>,
+            server: WebDisplayServer,
+        ) : this(configs, displays, server::stop)
 
-        fun bind(sink: AndroidMediaSink) {
-            this.sink = sink
-            sessions[sink] = this
-            displays.forEach { (type, display) -> display.keyFrameSource = { sink.requestKeyFrame(type) } }
+        private data class InstalledClusterPresentation(
+            val generation: Long,
+            val adapter: Closeable,
+        )
+
+        private val closed = AtomicBoolean(false)
+        private val closeCompleted = AtomicBoolean(false)
+        private val closeAttemptLock = Any()
+        private var closeAttemptOwner: Thread? = null
+        private var serverStopped = false
+        @Volatile private var sink: AndroidMediaSink? = null
+        private val previews = WebDisplayPreviewRoutes()
+        /** A handoff suppresses all later preview attaches in this Session, even after failure. */
+        private val suspendedPhysicalHandoff = mutableMapOf<Int, Surface>()
+        private val clusterPresentationLock = Any()
+        private var clusterPresentation: InstalledClusterPresentation? = null
+        private var clusterPresentationOperation: Any? = null
+        private var clusterPresentationGeneration = 0L
+
+        fun bind(sink: AndroidMediaSink) = synchronized(closeAttemptLock) {
+            check(!closed.get()) { "WebDisplay session is closed" }
+            check(this.sink == null || this.sink === sink) {
+                "WebDisplay session is already bound to another media sink"
+            }
+            if (this.sink === sink) return@synchronized
+            synchronized(sessions) {
+                this.sink = sink
+                sessions[sink] = this
+            }
+            displays.forEach { (type, display) ->
+                display.keyFrameSource = { sink.requestKeyFrame(type) }
+            }
         }
 
         fun owns(type: Int) = displays.containsKey(type)
 
-        @Synchronized fun preview(type: Int, surface: Surface?) {
+        /**
+         * Bridges UI Sync presentation metadata into the optional cluster WebDisplay. The
+         * coordinator remains controller-owned; replacing or closing this binding does not affect
+         * its protocol lifetime.
+         */
+        fun attachClusterPresentation(
+            coordinator: ClusterPresentationCoordinator,
+        ): Closeable = replaceClusterPresentation { target ->
+            ClusterPresentationWebDisplayAdapter(coordinator, target)
+        }
+
+        /**
+         * Adapts a replayable renderer snapshot without feeding its historical events back through
+         * the legacy event accumulator. This is only a presentation seam; it does not negotiate or
+         * enable UI Sync.
+         */
+        fun attachClusterPresentation(
+            source: UiSyncPresentationSource,
+            displayId: String,
+            limits: ClusterPresentationLimits = ClusterPresentationLimits(),
+        ): Closeable = replaceClusterPresentation { target ->
+            UiSyncSnapshotWebDisplayAdapter(
+                source = source,
+                displayId = displayId,
+                target = target,
+                limits = limits,
+            )
+        }
+
+        /**
+         * Two-phase replacement. The state lock only reserves/publishes identity; lease allocation,
+         * source subscription, and every close happen outside it. Reentrant close invalidates the
+         * operation token, so a candidate created after close can only be reclaimed, never installed.
+         */
+        internal fun replaceClusterPresentation(
+            create: (WebDisplayPresentationLease) -> Closeable,
+        ): Closeable {
+            val channel = displays[CLUSTER] ?: return Closeable { }
+            val operation = synchronized(clusterPresentationLock) {
+                if (closed.get()) return Closeable { }
+                check(clusterPresentationOperation == null) {
+                    "A cluster presentation replacement is already in progress"
+                }
+                Any().also { clusterPresentationOperation = it }
+            }
+
+            val previous = synchronized(clusterPresentationLock) { clusterPresentation }
+            val target = try {
+                channel.acquirePresentationLease()
+            } catch (failure: Throwable) {
+                abortClusterPresentationReplacement(operation, previous, failure)
+            }
+            val candidate = try {
+                create(target)
+            } catch (failure: Throwable) {
+                try {
+                    target.close()
+                } catch (closeFailure: Throwable) {
+                    failure.addSuppressed(closeFailure)
+                }
+                abortClusterPresentationReplacement(operation, previous, failure)
+            }
+
+            try {
+                previous?.adapter?.close()
+            } catch (failure: Throwable) {
+                try {
+                    candidate.close()
+                } catch (closeFailure: Throwable) {
+                    failure.addSuppressed(closeFailure)
+                }
+                abortClusterPresentationReplacement(operation, previous, failure)
+            }
+
+            val installedGeneration = synchronized(clusterPresentationLock) {
+                if (clusterPresentationOperation !== operation) {
+                    null
+                } else if (closed.get()) {
+                    clusterPresentationOperation = null
+                    null
+                } else {
+                    check(clusterPresentationGeneration != Long.MAX_VALUE) {
+                        "Cluster presentation generation exhausted"
+                    }
+                    clusterPresentationGeneration += 1L
+                    clusterPresentation = InstalledClusterPresentation(
+                        clusterPresentationGeneration,
+                        candidate,
+                    )
+                    clusterPresentationOperation = null
+                    clusterPresentationGeneration
+                }
+            }
+            if (installedGeneration == null) {
+                candidate.close()
+                return Closeable { }
+            }
+
+            return Closeable {
+                synchronized(clusterPresentationLock) {
+                    val current = clusterPresentation
+                    if (
+                        current?.generation == installedGeneration &&
+                        current.adapter === candidate
+                    ) {
+                        clusterPresentation = null
+                    }
+                }
+                candidate.close()
+            }
+        }
+
+        private fun abortClusterPresentationReplacement(
+            operation: Any,
+            previous: InstalledClusterPresentation?,
+            failure: Throwable,
+        ): Nothing {
+            val retire = synchronized(clusterPresentationLock) {
+                if (clusterPresentationOperation === operation) {
+                    clusterPresentationOperation = null
+                    if (clusterPresentation === previous) {
+                        clusterPresentation = null
+                        previous?.adapter
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+            try {
+                retire?.close()
+            } catch (closeFailure: Throwable) {
+                failure.addSuppressed(closeFailure)
+            }
+            throw failure
+        }
+
+        @Synchronized fun preview(type: Int, surface: Surface?): Boolean {
+            if (closed.get()) return false
             val target = surface.takeIf { configs[type]?.preview == true }
-            val current = previews[type]
-            if (current === target) return
+            val sink = sink ?: return false
+            // The old Surface remains tombstoned for this Session. A later *different* Surface
+            // may still become its preview after a denied handoff; the sink's type-wide gate
+            // independently rejects that attach while an actual handoff is still in flight.
+            val suspended = suspendedPhysicalHandoff[type]
+            if (suspended != null && (target == null || target === suspended)) return false
+            return previews.tryReplace(
+                type,
+                target,
+                attach = { sink.trySetSurfaceForPreview(type, it) },
+                detach = { sink.clearSurface(type, it) },
+            )
+        }
+
+        /** Called before sink capture so a UI refresh cannot reattach during handoff. */
+        @Synchronized internal fun suspendPreviewForPhysicalHandoff(
+            type: Int,
+            expected: Surface,
+        ): Boolean {
+            if (closed.get() || !owns(type) ||
+                previews.currentSurface(type)?.let { it !== expected } == true
+            ) return false
+            val current = suspendedPhysicalHandoff[type]
+            if (current != null && current !== expected) return false
+            suspendedPhysicalHandoff[type] = expected
+            return true
+        }
+
+        /** No old Activity may clear a different Activity's successor preview. */
+        @Synchronized fun clearPreview(type: Int, expected: Surface) {
+            if (closed.get()) return
             val sink = sink ?: return
-            if (current != null) { previews.remove(type); sink.clearSurface(type, current) }
-            if (target != null) { previews[type] = target; sink.setSurface(type, target) }
+            previews.clearIfCurrent(type, expected) { sink.clearSurface(type, it) }
+        }
+
+        /** Exact synchronous preview detachment for a process-owned physical handoff. */
+        @Synchronized internal fun retirePreviewForPhysicalHandoff(type: Int, expected: Surface): Long? {
+            if (closed.get()) return null
+            val sink = sink ?: return null
+            return if (previews.clearIfCurrent(type, expected) { sink.clearSurface(type, it) }) {
+                previews.generation(type)
+            } else null
+        }
+
+        /**
+         * Restores metadata only after the captured sink reservation atomically restores its old
+         * decoder binding. The same Session must still own this sink, and a successor Activity's
+         * preview can never be overwritten. No Activity or View is retained by this operation.
+         */
+        internal fun restorePreviewAfterPhysicalHandoff(
+            type: Int,
+            expected: Surface,
+            expectedSink: AndroidMediaSink,
+            expectedPreviewGeneration: Long,
+            restoreSink: () -> Boolean,
+        ): Boolean = synchronized(closeAttemptLock) {
+            synchronized(this) previewRestore@ {
+                synchronized(sessions) {
+                    if (closed.get() || sink !== expectedSink || sessions[expectedSink] !== this ||
+                        configs[type]?.preview != true || previews.currentSurface(type) != null ||
+                        previews.generation(type) != expectedPreviewGeneration
+                    ) return@previewRestore false
+                    if (!restoreSink()) return@previewRestore false
+                    check(previews.rememberRestoredIfSameGeneration(
+                        type, expected, expectedPreviewGeneration,
+                    )) {
+                        "WebDisplay preview changed during exact legacy restoration"
+                    }
+                    true
+                }
+            }
         }
 
         override fun forwardsVideo(type: Int) = displays.containsKey(type)
@@ -142,11 +550,102 @@ object CarPlayWebDisplayFactory {
         override fun onAudioStopped(stream: Int) { displays[MAIN]?.audioStopped(stream) }
 
         override fun close() {
-            if (!closed.compareAndSet(false, true)) return
-            sink?.let { sessions.remove(it, this) }; sink = null
-            server.stop()
+            // Admission closes immediately, independently of whether external retirement succeeds.
+            closed.set(true)
+            synchronized(closeAttemptLock) {
+                if (closeCompleted.get()) return
+                val currentThread = Thread.currentThread()
+                check(closeAttemptOwner !== currentThread) {
+                    "WebDisplay close is already in flight on this thread"
+                }
+                check(closeAttemptOwner == null) {
+                    "WebDisplay close attempt owner was not released"
+                }
+                closeAttemptOwner = currentThread
+                try {
+                    var failure: Throwable? = null
+
+                    val presentation = synchronized(clusterPresentationLock) {
+                        clusterPresentationOperation = null
+                        clusterPresentation
+                    }
+                    if (presentation != null) {
+                        try {
+                            presentation.adapter.close()
+                            synchronized(clusterPresentationLock) {
+                                if (clusterPresentation === presentation) {
+                                    clusterPresentation = null
+                                } else {
+                                    check(clusterPresentation == null) {
+                                        "WebDisplay presentation owner changed after close admission"
+                                    }
+                                }
+                            }
+                        } catch (caught: Throwable) {
+                            // Keep the exact adapter installed for the next close attempt.
+                            failure = combineWebDisplayCloseFailures(failure, caught)
+                        }
+                    }
+
+                    val boundSink = sink
+                    if (boundSink != null) {
+                        try {
+                            // A closed WebDisplay must not leave its old preview decoder route
+                            // installed. Keep this Session discoverable until exact detachment
+                            // finishes; failed clears retain their preview entry for retry.
+                            synchronized(this) {
+                                configs.keys.forEach { type ->
+                                    previews.currentSurface(type)?.let { current ->
+                                        previews.clearIfCurrent(type, current) {
+                                            boundSink.clearSurface(type, it)
+                                        }
+                                    }
+                                }
+                                suspendedPhysicalHandoff.clear()
+                            }
+                            synchronized(sessions) { sessions.remove(boundSink, this) }
+                            displays.values.forEach { display ->
+                                display.keyFrameSource = { false }
+                            }
+                            if (sink === boundSink) sink = null
+                        } catch (caught: Throwable) {
+                            // Keep the exact sink identity until registry detachment completes.
+                            failure = combineWebDisplayCloseFailures(failure, caught)
+                        }
+                    }
+
+                    if (!serverStopped) {
+                        try {
+                            stopServer()
+                            serverStopped = true
+                        } catch (caught: Throwable) {
+                            // The bound method retains the exact server instance for retry.
+                            failure = combineWebDisplayCloseFailures(failure, caught)
+                        }
+                    }
+
+                    if (failure == null) {
+                        check(synchronized(clusterPresentationLock) {
+                            clusterPresentation == null && clusterPresentationOperation == null
+                        }) { "WebDisplay presentation retirement is incomplete" }
+                        check(sink == null) { "WebDisplay sink detachment is incomplete" }
+                        check(serverStopped) { "WebDisplay server retirement is incomplete" }
+                        closeCompleted.set(true)
+                    }
+                    failure?.let { throw it }
+                } finally {
+                    closeAttemptOwner = null
+                }
+            }
         }
     }
+}
+
+/** Preserve a fatal Error as the primary throwable while retaining every ordinary close failure. */
+private fun combineWebDisplayCloseFailures(current: Throwable?, next: Throwable): Throwable = when {
+    current == null -> next
+    next is Error && current !is Error -> next.also { if (current !== next) it.addSuppressed(current) }
+    else -> current.also { if (current !== next) it.addSuppressed(next) }
 }
 
 /**
@@ -165,6 +664,8 @@ internal class WebDisplayChannel(
     private val keyLock = Any()
     private var lastKeyRequest: Long? = null
     @Volatile private var config: Config? = null
+    @Volatile private var presentation: String? = null
+    private var presentationOwner: Any? = null
     @Volatile var active = false; private set
     @Volatile var keyFrameSource: () -> Boolean = { false }
     /** On the main display, a connected browser also takes the phone's audio from the local speaker. */
@@ -174,6 +675,7 @@ internal class WebDisplayChannel(
     @Synchronized fun attach(viewer: WebDisplayViewer) {
         viewers += viewer
         viewer.state(state())
+        presentation?.let(viewer::presentation)
         // Joining mid-stream: the decoder needs the parameter sets and a random access picture now.
         config?.let { viewer.config(it.codec, it.message); requestKeyFrame(force = true) }
     }
@@ -231,6 +733,39 @@ internal class WebDisplayChannel(
         viewers.forEach { it.control(message) }
     }
 
+    /**
+     * A replacement lease makes publication linearizable: delayed callbacks from an older source
+     * cannot replace the latest presentation after a new source has taken ownership.
+     */
+    @Synchronized fun acquirePresentationLease(): WebDisplayPresentationLease {
+        require(type == CarPlayWebDisplayFactory.CLUSTER) {
+            "Presentation metadata is only supported by the cluster WebDisplay"
+        }
+        val owner = Any()
+        presentationOwner = owner
+        if (presentation != null) clearPresentationForViewers()
+        return WebDisplayPresentationLease(this, owner)
+    }
+
+    @Synchronized internal fun replacePresentation(owner: Any, json: String): Boolean {
+        if (presentationOwner !== owner) return false
+        presentation = json
+        viewers.forEach { it.presentation(json) }
+        return true
+    }
+
+    @Synchronized internal fun releasePresentation(owner: Any) {
+        if (presentationOwner !== owner) return
+        presentationOwner = null
+        clearPresentationForViewers()
+    }
+
+    /** Caller holds this channel's monitor. Reset is local and never enters UI Sync state. */
+    private fun clearPresentationForViewers() {
+        presentation = null
+        viewers.forEach { it.presentation(PRESENTATION_RESET) }
+    }
+
     /** Rate limited: every browser waiting for sync asks on every rejected picture. */
     fun requestKeyFrame(force: Boolean = false) {
         val time = now()
@@ -250,7 +785,23 @@ internal class WebDisplayChannel(
         const val FRAME: Byte = 2
         const val AUDIO: Byte = 3
         const val AUDIO_STOPPED: Byte = 4
+        const val PRESENTATION_RESET = "{\"type\":\"clusterPresentationReset\",\"version\":1}"
         private val KEY_FRAME_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(500)
+    }
+}
+
+/** Identity-scoped publication access for one replayable cluster presentation source. */
+internal class WebDisplayPresentationLease(
+    private val channel: WebDisplayChannel,
+    private val owner: Any,
+) : Closeable {
+    private val closed = AtomicBoolean(false)
+
+    fun replace(json: String): Boolean =
+        !closed.get() && channel.replacePresentation(owner, json)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) channel.releasePresentation(owner)
     }
 }
 
@@ -281,6 +832,12 @@ internal class WebDisplayViewer(private val transport: Transport, start: Boolean
     }
 
     fun state(json: String) = lock.withLock { enqueue(Message(null, json, CONTROL)) }
+
+    /** Coalesced because every presentation message is a complete replayable snapshot. */
+    fun presentation(json: String) = lock.withLock {
+        drop(PRESENTATION)
+        enqueue(Message(null, json, PRESENTATION))
+    }
 
     fun control(message: ByteArray) = lock.withLock { enqueue(Message(message, null, CONTROL)) }
 
@@ -385,6 +942,7 @@ internal class WebDisplayViewer(private val transport: Transport, start: Boolean
         const val CONTROL = 0
         const val VIDEO = 1
         const val AUDIO = 2
+        const val PRESENTATION = 3
         const val MAX_VIDEO_FRAMES = 12
         const val MAX_VIDEO_BYTES = 4L * 1024 * 1024
         /** About half a second of 20 ms packets. */

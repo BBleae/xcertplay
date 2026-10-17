@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
@@ -11,12 +12,106 @@ import com.shilapi.xcertplay.airplay.SafeAreaCodec
 import com.shilapi.xcertplay.airplay.SafeAreaRect
 import com.shilapi.xcertplay.media.MainMediaAudioBuffer
 import com.shilapi.xcertplay.media.MicrophoneGain
+import com.shilapi.xcertplay.mfi.MfiCertificateType
+import com.shilapi.xcertplay.orchestration.ClusterAssetCatalogProbe
 import com.shilapi.xcertplay.orchestration.ManualHotspotBand
 import com.shilapi.xcertplay.orchestration.ManualHotspotSecurity
 import com.shilapi.xcertplay.orchestration.MfiTarget
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
 import com.shilapi.xcertplay.transport.LockdownPairRecord
 import java.io.File
+
+/** Independent persisted display and experimental Ultra capability switches. */
+internal data class CarPlayPresentationSettings(
+    val clusterDisplayEnabled: Boolean,
+    val carPlayUltraEnabled: Boolean,
+    val physicalDisplayPanelsProbeEnabled: Boolean = false,
+) {
+    init {
+        require(!physicalDisplayPanelsProbeEnabled || carPlayUltraEnabled) {
+            "The physical display probe requires CarPlay Ultra"
+        }
+    }
+
+    companion object {
+        fun resolve(
+            persistedClusterDisplayEnabled: Boolean?,
+            legacyClusterWebDisplayEnabled: Boolean,
+            persistedCarPlayUltraEnabled: Boolean,
+            persistedPhysicalDisplayPanelsProbeEnabled: Boolean = false,
+        ): CarPlayPresentationSettings {
+            // Browser output cannot exist without the stream it consumes. The OR also heals a
+            // partially written preference set while preserving the one-time legacy migration.
+            val clusterEnabled = legacyClusterWebDisplayEnabled ||
+                persistedClusterDisplayEnabled == true
+            val ultraEnabled = persistedCarPlayUltraEnabled
+            return CarPlayPresentationSettings(
+                clusterDisplayEnabled = clusterEnabled,
+                carPlayUltraEnabled = ultraEnabled,
+                physicalDisplayPanelsProbeEnabled = persistedPhysicalDisplayPanelsProbeEnabled && ultraEnabled,
+            )
+        }
+    }
+}
+
+/** An explicit, independently opted-in catalog request. These fields are never authorization. */
+internal data class CarPlayAssetCatalogProbeSettings(
+    val enabled: Boolean = false,
+    val assetId: String = "",
+    val sdkVersion: String = "",
+    val certificateType: String = "",
+    val identitySha256Hex: String = "",
+) {
+    fun toProbeOrNull(ultraEnabled: Boolean): ClusterAssetCatalogProbe? {
+        if (!enabled || !ultraEnabled) return null
+        val id = assetId.trim()
+        val sdk = sdkVersion.trim()
+        if (!validCatalogField(id) || !validCatalogField(sdk)) return null
+        val type = MfiCertificateType.entries.firstOrNull { it.name == certificateType } ?: return null
+        val hex = identitySha256Hex.trim()
+        if (hex.length != 64 || !hex.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            return null
+        }
+        val digest = ByteArray(32) { index ->
+            hex.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+        return try {
+            ClusterAssetCatalogProbe(id, sdk, type, digest)
+        } catch (_: IllegalArgumentException) {
+            // A stricter shared wire validator must never crash settings restore or startup.
+            null
+        }
+    }
+
+    override fun toString(): String = "CarPlayAssetCatalogProbeSettings(<redacted>)"
+
+    private fun validCatalogField(value: String): Boolean {
+        if (value.isBlank() || value.length > ClusterAssetCatalogProbe.MAX_FIELD_CHARACTERS ||
+            value.any { Character.isISOControl(it) }
+        ) return false
+        val utf8 = value.toByteArray(Charsets.UTF_8)
+        return utf8.size <= ClusterAssetCatalogProbe.MAX_FIELD_UTF8_BYTES &&
+            utf8.toString(Charsets.UTF_8) == value
+    }
+}
+
+/** Pure migration policy kept separate from Android preferences so the DPI regression is tested. */
+internal fun resolvePersistedPhysicalSizeBasis(
+    stored: String?,
+    version: Int,
+): AirPlayPhysicalSizeBasis {
+    val parsed = AirPlayPhysicalSizeBasis.entries.firstOrNull { it.name == stored }
+    return when {
+        parsed == null -> AirPlayDisplaySettings.DEFAULT_PHYSICAL_SIZE_BASIS
+        // Version 1 silently migrated WIDTH to LONGEST_EDGE without converting millimetres;
+        // recover that known migration. Version 3's SHORTEST_EDGE could be either the automatic
+        // default or an explicit user choice, with no stored provenance to distinguish them.
+        // Preserve it rather than silently override a user's calibration; fresh installs use WIDTH.
+        version == 1 && parsed == AirPlayPhysicalSizeBasis.LONGEST_EDGE ->
+            AirPlayPhysicalSizeBasis.WIDTH
+        else -> parsed
+    }
+}
 
 /** SharedPreferences persistence for the accessory identity and paired controllers. */
 object AirPlayPersistence {
@@ -35,6 +130,14 @@ object AirPlayPersistence {
     private const val KEY_LOCKDOWN_ROOT_PRIVATE = "lockdown_root_private"
     private const val KEY_LOCKDOWN_ROOT_CERT = "lockdown_root_cert"
     private const val KEY_DISPLAY_SCALE_TENTHS = "display_scale_tenths"
+    private const val KEY_CLUSTER_DISPLAY_ENABLED = "cluster_display_enabled"
+    private const val KEY_CARPLAY_ULTRA_ENABLED = "carplay_ultra_enabled"
+    private const val KEY_PHYSICAL_DISPLAY_PANELS_PROBE_ENABLED = "physical_display_panels_probe_enabled"
+    private const val KEY_CLUSTER_ASSET_CATALOG_PROBE_ENABLED = "cluster_asset_catalog_probe_enabled"
+    private const val KEY_CLUSTER_ASSET_CATALOG_PROBE_ASSET_ID = "cluster_asset_catalog_probe_asset_id"
+    private const val KEY_CLUSTER_ASSET_CATALOG_PROBE_SDK_VERSION = "cluster_asset_catalog_probe_sdk_version"
+    private const val KEY_CLUSTER_ASSET_CATALOG_PROBE_CERTIFICATE_TYPE = "cluster_asset_catalog_probe_certificate_type"
+    private const val KEY_CLUSTER_ASSET_CATALOG_PROBE_IDENTITY_SHA256 = "cluster_asset_catalog_probe_identity_sha256"
     private const val KEY_HEVC_ENABLED = "hevc_enabled"
     private const val KEY_HEVC_SOFTWARE_DECODER = "hevc_software_decoder"
     private const val KEY_ADVANCED_AUDIO_CHANNEL_MAPPING = "advanced_audio_channel_mapping"
@@ -59,6 +162,8 @@ object AirPlayPersistence {
     private const val KEY_FPS = "display_fps"
     private const val KEY_WIDTH_PHYSICAL_MM = "display_width_physical_mm"
     private const val KEY_PHYSICAL_SIZE_BASIS = "display_physical_size_basis"
+    private const val KEY_PHYSICAL_SIZE_BASIS_VERSION = "display_physical_size_basis_version"
+    private const val PHYSICAL_SIZE_BASIS_VERSION = 4
     private const val KEY_MAX_DETECTED_WIDTH = "display_max_detected_width"
     private const val KEY_MAX_DETECTED_HEIGHT = "display_max_detected_height"
     private const val KEY_RIGHT_HAND_DRIVE = "right_hand_drive"
@@ -102,6 +207,119 @@ object AirPlayPersistence {
             .putBoolean(prefix + "enabled", config.enabled)
             .putInt(prefix + "width", config.width).putInt(prefix + "height", config.height)
             .putBoolean(prefix + "preview", config.preview).apply()
+    }
+
+    /**
+     * Loads the display capabilities that are independent of where decoded video is shown.
+     *
+     * Older builds used the type-111 WebDisplay switch for both declaring the cluster to the
+     * phone and selecting a browser as its output. Migrate that value exactly once, then keep the
+     * declaration and output destination as separate settings.
+     */
+    @Synchronized
+    internal fun loadCarPlayPresentationSettings(context: Context): CarPlayPresentationSettings {
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val hasClusterSetting = preferences.contains(KEY_CLUSTER_DISPLAY_ENABLED)
+        val persistedClusterDisplayEnabled = if (hasClusterSetting) {
+            preferences.getBoolean(KEY_CLUSTER_DISPLAY_ENABLED, false)
+        } else {
+            null
+        }
+        val settings = CarPlayPresentationSettings.resolve(
+            persistedClusterDisplayEnabled = persistedClusterDisplayEnabled,
+            legacyClusterWebDisplayEnabled = preferences.getBoolean(
+                "web_display_111_enabled",
+                false,
+            ),
+            persistedCarPlayUltraEnabled = preferences.getBoolean(
+                KEY_CARPLAY_ULTRA_ENABLED,
+                false,
+            ),
+            persistedPhysicalDisplayPanelsProbeEnabled = preferences.getBoolean(
+                KEY_PHYSICAL_DISPLAY_PANELS_PROBE_ENABLED,
+                false,
+            ),
+        )
+        if (persistedClusterDisplayEnabled != settings.clusterDisplayEnabled ||
+            preferences.getBoolean(KEY_CARPLAY_ULTRA_ENABLED, false) !=
+            settings.carPlayUltraEnabled ||
+            preferences.getBoolean(KEY_PHYSICAL_DISPLAY_PANELS_PROBE_ENABLED, false) !=
+            settings.physicalDisplayPanelsProbeEnabled
+        ) {
+            preferences.edit()
+                .putBoolean(KEY_CLUSTER_DISPLAY_ENABLED, settings.clusterDisplayEnabled)
+                .putBoolean(KEY_CARPLAY_ULTRA_ENABLED, settings.carPlayUltraEnabled)
+                .putBoolean(
+                    KEY_PHYSICAL_DISPLAY_PANELS_PROBE_ENABLED,
+                    settings.physicalDisplayPanelsProbeEnabled,
+                )
+                .apply()
+        }
+        return settings
+    }
+
+    /** Read-only Ultra preference probe: unlike the migration loader this never writes. */
+    internal fun peekCarPlayUltraEnabled(context: Context): Boolean =
+        peekCarPlayUltraEnabled(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+
+    internal fun peekCarPlayUltraEnabled(preferences: SharedPreferences): Boolean =
+        preferences.getBoolean(KEY_CARPLAY_ULTRA_ENABLED, false)
+
+    internal fun saveCarPlayPresentationSettings(
+        context: Context,
+        settings: CarPlayPresentationSettings,
+        catalogProbeSettings: CarPlayAssetCatalogProbeSettings? = null,
+    ) = saveCarPlayPresentationSettings(
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE),
+        settings,
+        catalogProbeSettings,
+    )
+
+    internal fun saveCarPlayPresentationSettings(
+        preferences: SharedPreferences,
+        settings: CarPlayPresentationSettings,
+        catalogProbeSettings: CarPlayAssetCatalogProbeSettings? = null,
+    ) {
+        val editor = preferences.edit()
+            .putBoolean(KEY_CLUSTER_DISPLAY_ENABLED, settings.clusterDisplayEnabled)
+            .putBoolean(KEY_CARPLAY_ULTRA_ENABLED, settings.carPlayUltraEnabled)
+            .putBoolean(
+                KEY_PHYSICAL_DISPLAY_PANELS_PROBE_ENABLED,
+                settings.physicalDisplayPanelsProbeEnabled,
+            )
+        if (catalogProbeSettings != null) {
+            putCatalogProbeSettings(
+                editor,
+                if (settings.carPlayUltraEnabled) catalogProbeSettings
+                else catalogProbeSettings.copy(enabled = false),
+            )
+        }
+        editor.apply()
+    }
+
+    internal fun loadCarPlayAssetCatalogProbeSettings(context: Context): CarPlayAssetCatalogProbeSettings =
+        loadCarPlayAssetCatalogProbeSettings(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+
+    /** Kept separate from the Ultra switch so saved input never silently enables the probe. */
+    internal fun loadCarPlayAssetCatalogProbeSettings(preferences: SharedPreferences): CarPlayAssetCatalogProbeSettings =
+        CarPlayAssetCatalogProbeSettings(
+            enabled = preferences.getBoolean(KEY_CLUSTER_ASSET_CATALOG_PROBE_ENABLED, false),
+            assetId = preferences.getString(KEY_CLUSTER_ASSET_CATALOG_PROBE_ASSET_ID, "").orEmpty(),
+            sdkVersion = preferences.getString(KEY_CLUSTER_ASSET_CATALOG_PROBE_SDK_VERSION, "").orEmpty(),
+            certificateType = preferences.getString(KEY_CLUSTER_ASSET_CATALOG_PROBE_CERTIFICATE_TYPE, "").orEmpty(),
+            identitySha256Hex = preferences.getString(KEY_CLUSTER_ASSET_CATALOG_PROBE_IDENTITY_SHA256, "").orEmpty(),
+        )
+
+    private fun putCatalogProbeSettings(
+        editor: SharedPreferences.Editor,
+        settings: CarPlayAssetCatalogProbeSettings,
+    ) {
+        editor
+            .putBoolean(KEY_CLUSTER_ASSET_CATALOG_PROBE_ENABLED, settings.enabled)
+            .putString(KEY_CLUSTER_ASSET_CATALOG_PROBE_ASSET_ID, settings.assetId)
+            .putString(KEY_CLUSTER_ASSET_CATALOG_PROBE_SDK_VERSION, settings.sdkVersion)
+            .putString(KEY_CLUSTER_ASSET_CATALOG_PROBE_CERTIFICATE_TYPE, settings.certificateType)
+            .putString(KEY_CLUSTER_ASSET_CATALOG_PROBE_IDENTITY_SHA256, settings.identitySha256Hex)
     }
 
     @Synchronized fun webDisplayKey(context: Context): String {
@@ -511,15 +729,23 @@ object AirPlayPersistence {
     }
 
     fun loadPhysicalSizeBasis(context: Context): AirPlayPhysicalSizeBasis {
-        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_PHYSICAL_SIZE_BASIS, null)
-        return AirPlayPhysicalSizeBasis.entries.firstOrNull { it.name == stored }
-            ?: AirPlayDisplaySettings.DEFAULT_PHYSICAL_SIZE_BASIS
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stored = preferences.getString(KEY_PHYSICAL_SIZE_BASIS, null)
+        val version = preferences.getInt(KEY_PHYSICAL_SIZE_BASIS_VERSION, 0)
+        val resolved = resolvePersistedPhysicalSizeBasis(stored, version)
+        if (version != PHYSICAL_SIZE_BASIS_VERSION || stored != resolved.name) {
+            preferences.edit()
+                .putString(KEY_PHYSICAL_SIZE_BASIS, resolved.name)
+                .putInt(KEY_PHYSICAL_SIZE_BASIS_VERSION, PHYSICAL_SIZE_BASIS_VERSION)
+                .apply()
+        }
+        return resolved
     }
 
     fun savePhysicalSizeBasis(context: Context, basis: AirPlayPhysicalSizeBasis) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(KEY_PHYSICAL_SIZE_BASIS, basis.name)
+            .putInt(KEY_PHYSICAL_SIZE_BASIS_VERSION, PHYSICAL_SIZE_BASIS_VERSION)
             .apply()
     }
 

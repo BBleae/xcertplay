@@ -22,12 +22,14 @@ class WirelessHotspotInfo(
     val hostAddress: InetAddress?,
     val bandLabel: String,
     val backend: WirelessHotspotBackend,
+    val secondaryHostAddress: InetAddress? = null,
 ) {
     override fun toString(): String =
         "WirelessHotspotInfo(backend=${backend.label}, ssid='$ssid', " +
             "passphrase=<redacted>, security=$security, channel=$channel, " +
             "frequencyMHz=$frequencyMHz, bssid='$bssid', interfaceName=$interfaceName, " +
-            "hostAddress=$hostAddress, bandLabel='$bandLabel')"
+            "hostAddress=$hostAddress, secondaryHostAddress=$secondaryHostAddress, " +
+            "bandLabel='$bandLabel')"
 }
 
 /** Owns one Android Wi-Fi group and all resources needed to keep it alive. */

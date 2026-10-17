@@ -56,9 +56,19 @@ data class Iap2IdentificationConfig(
     val gpsLocationEnabled: Boolean = true,
     val vehicleSpeedEnabled: Boolean = false,
     val vehicleStatusCapabilities: Set<Int> = emptySet(),
+    /** Explicit opt-in to the implemented AppLinks start/update/stop subset (feature 0x18). */
+    val appLinksEnabled: Boolean = false,
+    /** Optional icon request/response subset; enabled only with an exact-session icon owner. */
+    val appLinksIconsEnabled: Boolean = false,
     /** USB-IF identity used by StartHID; defaults match this app's existing AirPlay HID identity. */
     val hidVendorIdentifier: Int = 2,
     val hidProductIdentifier: Int = 1,
+    /**
+     * WirelessCarPlayTransport sub-param 5. iOS stores it as the vehicle's supportsThemeAssets on
+     * every connect, and a first pairing that claims it without StartSession asset fields records
+     * an Ultra opt-out. Claim it only for an explicitly enabled Ultra session.
+     */
+    val themeAssetsCapable: Boolean = false,
 ) {
     constructor(
         name: String,
@@ -106,6 +116,9 @@ data class Iap2IdentificationConfig(
         }
         require(hidVendorIdentifier in 0..0xffff) { "hidVendorIdentifier must fit in u16" }
         require(hidProductIdentifier in 0..0xffff) { "hidProductIdentifier must fit in u16" }
+        require(!appLinksIconsEnabled || appLinksEnabled) {
+            "AppLinks icons require the AppLinks subscription"
+        }
     }
 }
 
@@ -174,12 +187,16 @@ class Iap2IdentificationClient(private val session: Iap2Session) {
                 MESSAGES_SENT_BY_ACCESSORY + LOCATION_INFORMATION
             } else {
                 MESSAGES_SENT_BY_ACCESSORY
-            }) + if (config.vehicleStatusCapabilities.isNotEmpty()) setOf(Iap2VehicleStatus.UPDATE) else emptySet()
+            }) + (if (config.vehicleStatusCapabilities.isNotEmpty()) setOf(Iap2VehicleStatus.UPDATE) else emptySet()) +
+                (if (config.appLinksEnabled) setOf(APP_LINKS_START, APP_LINKS_STOP) else emptySet()) +
+                (if (config.appLinksIconsEnabled) setOf(APP_LINKS_ICON_REQUEST) else emptySet())
             val receivedMessages = (if (config.locationInformationEnabled) {
                 MESSAGES_RECEIVED_FROM_PHONE + START_LOCATION_INFORMATION + STOP_LOCATION_INFORMATION
             } else {
                 MESSAGES_RECEIVED_FROM_PHONE
-            }) + if (config.vehicleStatusCapabilities.isNotEmpty()) setOf(Iap2VehicleStatus.START, Iap2VehicleStatus.STOP) else emptySet()
+            }) + (if (config.vehicleStatusCapabilities.isNotEmpty()) setOf(Iap2VehicleStatus.START, Iap2VehicleStatus.STOP) else emptySet()) +
+                (if (config.appLinksEnabled) setOf(APP_LINKS_UPDATE) else emptySet()) +
+                (if (config.appLinksIconsEnabled) setOf(APP_LINKS_ICON_RESPONSE) else emptySet())
             return Iap2Messages.build(Iap2Endpoints.IDENTIFICATION_INFORMATION) {
                 string(0, config.name)
                 string(1, config.modelIdentifier)
@@ -265,7 +282,7 @@ class Iap2IdentificationClient(private val session: Iap2Session) {
                         void(2)
                         u16(3, 1)
                         void(4)
-                        void(5)
+                        if (config.themeAssetsCapable) void(5)
                     }
                 }
             }
@@ -312,6 +329,11 @@ class Iap2IdentificationClient(private val session: Iap2Session) {
         private const val LOCATION_INFORMATION = 0xfffb
         private const val START_LOCATION_INFORMATION = 0xfffa
         private const val STOP_LOCATION_INFORMATION = 0xfffc
+        private const val APP_LINKS_START = 0xad00
+        private const val APP_LINKS_UPDATE = 0xad01
+        private const val APP_LINKS_STOP = 0xad02
+        private const val APP_LINKS_ICON_REQUEST = 0xad03
+        private const val APP_LINKS_ICON_RESPONSE = 0xad04
         private val WIRELESS_PHONE_MESSAGES = intArrayOf(0x4e0d, 0x4e0e, 0x5702)
     }
 }

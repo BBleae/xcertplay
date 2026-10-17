@@ -72,6 +72,7 @@ jobs:
         run: >-
           ./gradlew
           :shared:testDebugUnitTest
+          :common:testDebugUnitTest
           :common:lintDebug
           :mobile:lintDebug
           :automotive:lintDebug
@@ -171,6 +172,7 @@ jobs:
         run: >-
           ./gradlew
           :shared:testDebugUnitTest
+          :common:testDebugUnitTest
           :common:lintRelease
           :mobile:lintRelease
           :automotive:lintRelease

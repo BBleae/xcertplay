@@ -141,7 +141,8 @@ object Iap2Endpoints {
                     field(2, "isSupported", Iap2WireType.VOID),
                     field(3, "transportIdentifier", Iap2WireType.U16),
                     field(4, "isAvailable", Iap2WireType.VOID),
-                    field(5, "isEnabled", Iap2WireType.VOID),
+                    // iOS 27 accessoryd maps this void parameter to theme-assets capability.
+                    field(5, "themeAssetsCapable", Iap2WireType.VOID),
                 ),
             ),
         ),
@@ -554,6 +555,65 @@ object Iap2Endpoints {
         endpoint(0xda01, "DigitalAudioInformationUpdate", "DigitalAudio", Iap2Direction.IPHONE_TO_ACCESSORY)
     val DIGITAL_AUDIO_STOP = endpoint(0xda02, "digitalAudio_stop", "DigitalAudio", Iap2Direction.ACCESSORY_TO_IPHONE)
 
+    /** iOS 27 AppLinks subscription; icon metadata requires a separate explicit opt-in. */
+    val APP_LINKS_START = endpoint(
+        0xad00,
+        "appLinks_start",
+        "App links and launch",
+        Iap2Direction.ACCESSORY_TO_IPHONE,
+        fields = listOf(
+            field(
+                0,
+                "categories",
+                Iap2WireType.GROUP,
+                required = true,
+                children = listOf(1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12).map {
+                    field(it, "category$it", Iap2WireType.VOID)
+                },
+            ),
+            field(2, "preferredIconSize", Iap2WireType.U16),
+        ),
+    )
+    val APP_LINKS_UPDATE = endpoint(
+        0xad01,
+        "AppLinksUpdate",
+        "App links and launch",
+        Iap2Direction.IPHONE_TO_ACCESSORY,
+        fields = listOf(
+            field(0, "state", Iap2WireType.U8, required = true),
+            field(1, "appEntry", Iap2WireType.GROUP, repeatable = true),
+            field(2, "reportedCount", Iap2WireType.U16),
+        ),
+    )
+    val APP_LINKS_STOP = endpoint(
+        0xad02,
+        "appLinks_stop",
+        "App links and launch",
+        Iap2Direction.ACCESSORY_TO_IPHONE,
+    )
+    val APP_LINKS_ICON_REQUEST = endpoint(
+        0xad03,
+        "appLinks_requestAppIcons",
+        "App links and launch",
+        Iap2Direction.ACCESSORY_TO_IPHONE,
+        fields = listOf(
+            field(0, "carPlayBundleIdentifier", Iap2WireType.STRING, repeatable = true),
+            field(1, "externalAccessoryBundleIdentifier", Iap2WireType.STRING, repeatable = true),
+        ),
+    )
+    val APP_LINKS_ICON_RESPONSE = endpoint(
+        0xad04,
+        "AppIconResponse",
+        "App links and launch",
+        Iap2Direction.IPHONE_TO_ACCESSORY,
+        fields = listOf(
+            field(0, "bundleIdentifier", Iap2WireType.STRING, required = true),
+            field(1, "status", Iap2WireType.U8, required = true),
+            field(2, "transferBufferIdentifier", Iap2WireType.U8),
+            field(3, "iconHash", Iap2WireType.BYTES),
+        ),
+    )
+
     /**
      * The remaining reference endpoints are registered here without a claimed schema. Their body
      * can still be built and read through the generic body API, but no enum or field ID is invented.
@@ -620,6 +680,11 @@ object Iap2Endpoints {
         DIGITAL_AUDIO_START,
         DIGITAL_AUDIO_INFORMATION_UPDATE,
         DIGITAL_AUDIO_STOP,
+        APP_LINKS_START,
+        APP_LINKS_UPDATE,
+        APP_LINKS_STOP,
+        APP_LINKS_ICON_REQUEST,
+        APP_LINKS_ICON_RESPONSE,
         registryEndpoint(0xA100, "StartVehicleStatusUpdates", "Vehicle", Iap2Direction.IPHONE_TO_ACCESSORY),
         registryEndpoint(0xA101, "VehicleStatusUpdate", "Vehicle", Iap2Direction.ACCESSORY_TO_IPHONE),
         registryEndpoint(0xA102, "StopVehicleStatusUpdates", "Vehicle", Iap2Direction.IPHONE_TO_ACCESSORY),
@@ -675,11 +740,6 @@ object Iap2Endpoints {
             "Bluetooth connection status",
             Iap2Direction.ACCESSORY_TO_IPHONE,
         ),
-        registryEndpoint(0xAD00, "appLinks_start", "App links and launch", Iap2Direction.ACCESSORY_TO_IPHONE),
-        registryEndpoint(0xAD01, "AppLinksUpdate", "App links and launch", Iap2Direction.IPHONE_TO_ACCESSORY),
-        registryEndpoint(0xAD02, "appLinks_stop", "App links and launch", Iap2Direction.ACCESSORY_TO_IPHONE),
-        registryEndpoint(0xAD03, "appLinks_requestAppIcons", "App links and launch", Iap2Direction.ACCESSORY_TO_IPHONE),
-        registryEndpoint(0xAD04, "AppIconResponse", "App links and launch", Iap2Direction.IPHONE_TO_ACCESSORY),
         registryEndpoint(0xEA02, "requestAppLaunchHandler", "External Accessory", Iap2Direction.ACCESSORY_TO_IPHONE),
         registryEndpoint(0x6800, "hid_StartHIDMsgHandler", "HID and USB host", Iap2Direction.ACCESSORY_TO_IPHONE),
         registryEndpoint(0x6801, "hid_OutReport", "HID and USB host", Iap2Direction.IPHONE_TO_ACCESSORY),

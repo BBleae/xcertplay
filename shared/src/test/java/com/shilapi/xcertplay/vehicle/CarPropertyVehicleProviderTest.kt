@@ -1,5 +1,9 @@
 package com.shilapi.xcertplay.vehicle
 
+import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -55,5 +59,67 @@ class CarPropertyVehicleProviderTest {
         assertFalse(provider.start())
         assertNull(provider.awaitSnapshot(5))
         provider.close()
+    }
+
+    @Test fun closeFailsUntilTheExactWorkerHasActuallyStopped() {
+        val readEntered = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val closeCalls = AtomicInteger()
+        val backend = object : ReadOnlyCarPropertyBackend {
+            override fun connect() = true
+            override fun read(propertyId: Int): CarPropertyValue? {
+                readEntered.countDown()
+                while (true) {
+                    try {
+                        if (releaseRead.await(10, TimeUnit.MILLISECONDS)) break
+                    } catch (_: InterruptedException) {
+                        // Deliberately ignore interruption to inject an unretired worker.
+                    }
+                }
+                return null
+            }
+            override fun close() { closeCalls.incrementAndGet() }
+        }
+        val provider = CarPropertyVehicleProvider(
+            CarPropertyDataStore(backend, VehiclePlatform.STANDARD_ANDROID) { 100 },
+            VehicleDataConfig(
+                VehiclePlatform.STANDARD_ANDROID,
+                setOf(VehicleDataFeature.OUTSIDE_TEMPERATURE),
+            ),
+            now = { 100 },
+            workerCloseTimeoutMillis = 20,
+        )
+        assertTrue(provider.start())
+        assertTrue(readEntered.await(2, TimeUnit.SECONDS))
+
+        assertThrows(IOException::class.java) { provider.close() }
+        assertEquals(1, closeCalls.get())
+
+        releaseRead.countDown()
+        provider.close()
+        assertEquals(2, closeCalls.get())
+    }
+
+    @Test fun backendCloseFailureKeepsTheProviderRetryable() {
+        val closeCalls = AtomicInteger()
+        val backend = object : ReadOnlyCarPropertyBackend {
+            override fun connect() = true
+            override fun read(propertyId: Int): CarPropertyValue? = null
+            override fun close() {
+                if (closeCalls.incrementAndGet() == 1) throw IOException("injected disconnect failure")
+            }
+        }
+        val provider = CarPropertyVehicleProvider(
+            CarPropertyDataStore(backend, VehiclePlatform.STANDARD_ANDROID) { 100 },
+            VehicleDataConfig(VehiclePlatform.STANDARD_ANDROID, emptySet()),
+            now = { 100 },
+            workerCloseTimeoutMillis = 100,
+        )
+        assertTrue(provider.start())
+
+        assertThrows(IOException::class.java) { provider.close() }
+        provider.close()
+
+        assertEquals(2, closeCalls.get())
     }
 }

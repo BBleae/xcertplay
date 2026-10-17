@@ -1,5 +1,7 @@
 package com.shilapi.xcertplay.airplay
 
+import java.io.Closeable
+
 /**
  * ChaCha20-Poly1305 framing for the CarPlay control channel.
  *
@@ -7,29 +9,79 @@ package com.shilapi.xcertplay.airplay
  * header is the AEAD associated data and each direction uses an 8-byte little-endian nonce
  * counter plus its own key.
  */
-class ControlCipher(private val readKey: ByteArray, private val writeKey: ByteArray) {
+/** Keeps private key copies; [close] zeroes them after all users have retired. */
+class ControlCipher(readKey: ByteArray, writeKey: ByteArray) : Closeable {
+    private val readKey = readKey.copyOf()
+    private val writeKey = writeKey.copyOf()
     data class Decrypted(val data: ByteArray, val rest: ByteArray)
+    data class DecryptedFrame(val data: ByteArray, val consumedBytes: Int)
 
     private var readCounter = 0L
     private var writeCounter = 0L
+    private var closed = false
 
+    @Synchronized
     fun decrypt(buffer: ByteArray): Decrypted {
+        check(!closed) { "Control cipher is closed" }
         val output = ArrayList<ByteArray>()
-        var offset = 0
-        while (buffer.size - offset >= HEADER_SIZE) {
-            val length = readU16Le(buffer, offset)
-            val frameEnd = offset + HEADER_SIZE + length + TAG_SIZE
-            if (buffer.size < frameEnd) break
-            val aad = buffer.copyOfRange(offset, offset + HEADER_SIZE)
-            val ciphertextAndTag = buffer.copyOfRange(offset + HEADER_SIZE, frameEnd)
-            output.add(AirPlayCrypto.chachaOpen(readKey, AirPlayCrypto.nonce64(readCounter), ciphertextAndTag, aad))
-            readCounter++
-            offset = frameEnd
+        try {
+            var offset = 0
+            while (true) {
+                val frame = decryptFrame(buffer, offset) ?: break
+                try {
+                    output.add(frame.data)
+                } catch (failure: Throwable) {
+                    frame.data.fill(0)
+                    throw failure
+                }
+                offset += frame.consumedBytes
+            }
+            return Decrypted(
+                concatBytes(*output.toTypedArray()),
+                buffer.copyOfRange(offset, buffer.size),
+            )
+        } finally {
+            // concatBytes transfers into a distinct returned array. The individual decrypted
+            // frame buffers remain private to this call, including on a later-frame failure.
+            output.forEach { it.fill(0) }
         }
-        return Decrypted(concatBytes(*output.toTypedArray()), buffer.copyOfRange(offset, buffer.size))
     }
 
+    /**
+     * Authenticates and consumes at most one complete frame.
+     *
+     * Keeping this boundary observable is security-sensitive: callers must be able to remember
+     * that nonce N was already authenticated even when a later frame from the same TCP read is
+     * malformed. Returning null means only that the next frame is incomplete; it never advances
+     * the receive counter.
+     */
+    @Synchronized
+    fun decryptFrame(buffer: ByteArray, offset: Int = 0): DecryptedFrame? {
+        check(!closed) { "Control cipher is closed" }
+        require(offset in 0..buffer.size) { "offset is outside the encrypted buffer" }
+        if (buffer.size - offset < HEADER_SIZE) return null
+        val length = readU16Le(buffer, offset)
+        require(length <= MAX_PAYLOAD) {
+            "Encrypted control frame declares $length bytes, above $MAX_PAYLOAD"
+        }
+        val frameBytes = HEADER_SIZE + length + TAG_SIZE
+        if (buffer.size - offset < frameBytes) return null
+        val frameEnd = offset + frameBytes
+        val aad = buffer.copyOfRange(offset, offset + HEADER_SIZE)
+        val ciphertextAndTag = buffer.copyOfRange(offset + HEADER_SIZE, frameEnd)
+        val plaintext = AirPlayCrypto.chachaOpen(
+            readKey,
+            AirPlayCrypto.nonce64(readCounter),
+            ciphertextAndTag,
+            aad,
+        )
+        readCounter++
+        return DecryptedFrame(plaintext, frameBytes)
+    }
+
+    @Synchronized
     fun encrypt(plaintext: ByteArray): ByteArray {
+        check(!closed) { "Control cipher is closed" }
         val output = ArrayList<ByteArray>()
         var offset = 0
         do {
@@ -42,6 +94,16 @@ class ControlCipher(private val readKey: ByteArray, private val writeKey: ByteAr
             offset += MAX_PAYLOAD
         } while (offset < plaintext.size)
         return concatBytes(*output.toTypedArray())
+    }
+
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        readKey.fill(0)
+        writeKey.fill(0)
+        readCounter = 0
+        writeCounter = 0
     }
 
     private fun readU16Le(source: ByteArray, offset: Int): Int =

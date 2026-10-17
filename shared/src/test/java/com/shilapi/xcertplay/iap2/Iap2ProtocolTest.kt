@@ -115,6 +115,30 @@ class Iap2ProtocolTest {
     }
 
     @Test
+    fun carPlayThemeAssetAvailabilityPreservesRawFeatureMaskWithoutAssumingBoolean() {
+        val cases = listOf(
+            0x00 to false,
+            0x01 to true,
+            0x08 to null,
+            0x20 to null,
+            0x28 to null,
+            0x80 to null,
+        )
+
+        cases.forEach { (rawValue, available) ->
+            val frame = Iap2Messages.buildRaw(0x4300) { group(2) { u8(0, rawValue) } }
+            val themeAssets = Iap2CarPlayMessages.availability(frame).themeAssets
+            assertEquals(rawValue, themeAssets?.rawValue)
+            assertEquals(available, themeAssets?.available)
+        }
+
+        assertNull(Iap2CarPlayMessages.availability(Iap2Messages.buildRaw(0x4300) {}).themeAssets)
+        val emptyGroup = Iap2Messages.buildRaw(0x4300) { group(2) {} }
+        assertNull(Iap2CarPlayMessages.availability(emptyGroup).themeAssets?.rawValue)
+        assertNull(Iap2CarPlayMessages.availability(emptyGroup).themeAssets?.available)
+    }
+
+    @Test
     fun wirelessCarPlayAvailabilityUsesBooleanReferenceSemantics() {
         assertFalse(
             Iap2WirelessMessages.wirelessCarPlayAvailability(
@@ -168,7 +192,8 @@ class Iap2ProtocolTest {
 
         assertTrue(formatted.startsWith("IAP2 TX [wired] 0x4301 CarPlayStartSession"))
         assertTrue("wired:" in formatted)
-        assertTrue("wiredIP: \"fe80::2\"" in formatted)
+        assertTrue("wiredIP: <redacted" in formatted)
+        assertFalse("fe80::2" in formatted)
         assertTrue("airPlayPort: u32=7000" in formatted)
         assertTrue("raw-body=" in formatted)
     }
@@ -182,15 +207,41 @@ class Iap2ProtocolTest {
         )
 
         assertTrue(formatted.contains("body=malformed TLV"))
-        assertTrue(formatted.contains("raw-body=00 01 02"))
+        assertTrue(formatted.contains("raw-body=<3 bytes omitted>"))
     }
 
     @Test
-    fun formatterEscapesLineBreaksInNmeaStrings() {
+    fun formatterRedactsCredentialsAndAuthenticationMaterial() {
+        val start = Iap2CarPlayMessages.startSession(
+            airPlayPort = 7000,
+            publicKey = "public",
+            sourceVersion = "1.0",
+            wireless = Iap2WirelessSessionParameters(
+                ssid = "test-network",
+                passphrase = "do-not-log-this",
+                channel = 44,
+                ipAddresses = listOf("192.168.49.1"),
+                securityType = 2,
+            ),
+        )
+        val startTrace = Iap2FrameFormatter.format(Iap2TraceDirection.TX, "wireless", start)
+        assertTrue(startTrace.contains("passphrase: <redacted"))
+        assertFalse(startTrace.contains("do-not-log-this"))
+        assertFalse(startTrace.contains(start.payload.take(8).joinToString(" ") { "%02x".format(it) }))
+
+        val auth = Iap2Messages.buildRaw(0xaa02) { bytes(0, byteArrayOf(1, 2, 3, 4)) }
+        val authTrace = Iap2FrameFormatter.format(Iap2TraceDirection.RX, "wireless", auth)
+        assertTrue(authTrace.contains("<redacted"))
+        assertFalse(authTrace.contains("01 02 03 04"))
+    }
+
+    @Test
+    fun formatterRedactsNmeaLocationStrings() {
         val frame = Iap2ControlMessages.locationInformation("\$GPGGA,1\r\n")
         val formatted = Iap2FrameFormatter.format(Iap2TraceDirection.TX, "wired", frame)
 
-        assertTrue(formatted.contains("\\r\\n"))
+        assertTrue(formatted.contains("NMEA: <redacted"))
+        assertFalse(formatted.contains("GPGGA"))
     }
 
     @Test

@@ -37,6 +37,8 @@ class Ipv6NcmBridge(
     private var inboundLogBudget = 16
     private var outboundLogBudget = 24
     private val running = AtomicBoolean(false)
+    private var ncmOwned = true
+    private var tunOwned = true
     private lateinit var ncmToTunThread: Thread
     private lateinit var tunToNcmThread: Thread
 
@@ -52,12 +54,41 @@ class Ipv6NcmBridge(
         }
     }
 
+    @Synchronized
     override fun close() {
-        if (!running.compareAndSet(true, false)) return
-        ncm.close()
-        tun.close()
-        join(ncmToTunThread)
-        join(tunToNcmThread)
+        running.set(false)
+        var failure: Exception? = null
+        if (ncmOwned) {
+            try {
+                ncm.close()
+                ncmOwned = false
+            } catch (error: Exception) {
+                failure = combineCloseFailure(failure, error)
+            }
+        }
+        if (tunOwned) {
+            try {
+                tun.close()
+                tunOwned = false
+            } catch (error: Exception) {
+                failure = combineCloseFailure(failure, error)
+            }
+        }
+        if (::ncmToTunThread.isInitialized) {
+            try {
+                joinStrict(ncmToTunThread)
+            } catch (error: Exception) {
+                failure = combineCloseFailure(failure, error)
+            }
+        }
+        if (::tunToNcmThread.isInitialized) {
+            try {
+                joinStrict(tunToNcmThread)
+            } catch (error: Exception) {
+                failure = combineCloseFailure(failure, error)
+            }
+        }
+        failure?.let { throw it }
     }
 
     private fun runNcmToTun() {
@@ -139,14 +170,24 @@ class Ipv6NcmBridge(
         }
     }
 
-    private fun join(thread: Thread) {
+    private fun joinStrict(thread: Thread) {
         if (thread === Thread.currentThread()) return
         try {
             thread.join(JOIN_TIMEOUT_MILLIS)
-        } catch (_: InterruptedException) {
+        } catch (error: InterruptedException) {
             Thread.currentThread().interrupt()
+            throw IOException("Interrupted while retiring NCM IPv6 bridge worker ${thread.name}", error)
         }
-        if (thread.isAlive) thread.interrupt()
+        if (thread.isAlive) {
+            thread.interrupt()
+            throw IOException("NCM IPv6 bridge worker ${thread.name} did not stop before the deadline")
+        }
+    }
+
+    private fun combineCloseFailure(first: Exception?, next: Exception): Exception {
+        if (first == null) return next
+        if (first !== next && first.suppressed.size < 8) first.addSuppressed(next)
+        return first
     }
 
     private fun ByteArray.macString(): String =

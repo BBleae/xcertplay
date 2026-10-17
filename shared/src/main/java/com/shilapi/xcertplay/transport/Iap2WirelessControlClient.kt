@@ -1,12 +1,91 @@
 package com.shilapi.xcertplay.transport
 
+import com.shilapi.xcertplay.iap2.message.Iap2AppLinksLifecycle
+import com.shilapi.xcertplay.iap2.message.Iap2AppLinksIconResponse
+import com.shilapi.xcertplay.iap2.message.Iap2AppLinksMessages
+import com.shilapi.xcertplay.iap2.message.Iap2AppLinksUpdate
 import com.shilapi.xcertplay.iap2.message.Iap2CarPlayMessages
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetAcquisitionIntent
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetCatalog
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetKey
 import com.shilapi.xcertplay.iap2.message.Iap2HidMessages
 import com.shilapi.xcertplay.iap2.message.Iap2WirelessMessages
 import com.shilapi.xcertplay.iap2.message.Iap2WirelessSessionParameters
 import com.shilapi.xcertplay.iap2.session.Iap2Session
 import com.shilapi.xcertplay.iap2.wire.Iap2Frame
+import com.shilapi.xcertplay.iap2.wire.Iap2ProtocolException
 import com.shilapi.xcertplay.mfi.Iap2MfiAuthenticationClient
+import com.shilapi.xcertplay.mfi.MfiAuthenticationAttempt
+import com.shilapi.xcertplay.mfi.MfiAuthenticationIdentity
+import com.shilapi.xcertplay.mfi.MfiAuthenticationReceipt
+import java.io.IOException
+
+internal fun resolveLiveWirelessControlEndpoint(
+    initial: Iap2WirelessCarPlayEndpoint,
+    current: () -> Iap2WirelessCarPlayEndpoint?,
+    messageId: Int,
+): Iap2WirelessCarPlayEndpoint {
+    val live = current() ?: throw IOException(
+        "Wireless P2P/AirPlay endpoint retired before 0x${messageId.toString(16)}",
+    )
+    if (
+        live.ssid != initial.ssid || live.passphrase != initial.passphrase ||
+        live.channel != initial.channel || live.security != initial.security ||
+        live.airPlayPort != initial.airPlayPort ||
+        live.deviceIdentifier != initial.deviceIdentifier ||
+        live.publicKey != initial.publicKey ||
+        live.sourceVersion != initial.sourceVersion
+    ) {
+        throw IOException("Wireless endpoint identity changed before 0x${messageId.toString(16)}")
+    }
+    return live
+}
+
+internal fun wirelessStartSessionForControlSend(
+    initial: Iap2WirelessCarPlayEndpoint,
+    current: () -> Iap2WirelessCarPlayEndpoint?,
+    availabilityPayload: ByteArray,
+    authenticationIdentity: MfiAuthenticationIdentity,
+    allowClusterAssetAcquisition: (String, MfiAuthenticationIdentity) -> Boolean,
+): Iap2CarPlayStartSessionReply {
+    val live = resolveLiveWirelessControlEndpoint(initial, current, 0x4301)
+    return Iap2CarPlayStartSessionReply(
+        frame = Iap2WirelessControlClient.carPlayStartSession(
+            live,
+            availabilityPayload,
+            authenticationIdentity,
+            allowClusterAssetAcquisition,
+        ),
+        acquisitionRequested = live.clusterAssetAcquisitionIntent != null,
+    )
+}
+
+/** The old Bluetooth CSM must not start another CarPlay session after tunnel handoff begins. */
+internal fun wirelessBootstrapStartSessionForControlSend(
+    initial: Iap2WirelessCarPlayEndpoint,
+    current: () -> Iap2WirelessCarPlayEndpoint?,
+    availabilityPayload: ByteArray,
+    authenticationIdentity: MfiAuthenticationIdentity,
+    allowClusterAssetAcquisition: (String, MfiAuthenticationIdentity) -> Boolean,
+    bootstrapSendAllowed: () -> Boolean,
+): Iap2CarPlayStartSessionReply? {
+    fun admitted(): Boolean = try {
+        bootstrapSendAllowed()
+    } catch (_: Exception) {
+        false
+    }
+    if (!admitted()) return null
+    val reply = wirelessStartSessionForControlSend(
+        initial,
+        current,
+        availabilityPayload,
+        authenticationIdentity,
+        allowClusterAssetAcquisition,
+    )
+    // Live endpoint resolution and signed-profile checks can overlap handoff. Re-check before
+    // the actual CSM send, while keeping controller locks out of the blocking send itself.
+    return reply.takeIf { admitted() }
+}
 
 /**
  * The wireless LIVI control sequence after a CSM channel is ready:
@@ -20,9 +99,32 @@ class Iap2WirelessControlClient(
     private val session: Iap2Session,
     private val mfi: Iap2MfiAuthenticationClient,
 ) {
+    @Volatile private var appLinksLifecycle: Iap2AppLinksLifecycle? = null
+    @Volatile private var appLinksIconChannel: Iap2AppLinksIconChannel? = null
+
+    /** Explicit Host opt-in; no AppLinks Start is emitted by [run] itself. */
+    fun startAppLinks(categoryIds: Set<Int>, preferredIconSize: Int? = null): Boolean =
+        appLinksLifecycle?.start(categoryIds, preferredIconSize) ?: false
+
+    fun stopAppLinks(): Boolean {
+        val lifecycle = appLinksLifecycle ?: return false
+        return try {
+            lifecycle.stop()
+        } finally {
+            appLinksIconChannel?.takeIf { it.lifecycle === lifecycle }?.onStopped()
+        }
+    }
+
+    /** One authenticated AD03 request per owned CSM; no automatic icon request or retry. */
+    fun requestAppLinksIcons(
+        carPlayBundleIdentifiers: Set<String>,
+        externalAccessoryBundleIdentifiers: Set<String> = emptySet(),
+    ): Boolean = appLinksIconChannel?.request(carPlayBundleIdentifiers, externalAccessoryBundleIdentifiers) ?: false
+
     fun run(
         identification: Iap2IdentificationConfig,
         endpoint: Iap2WirelessCarPlayEndpoint,
+        authenticationAttempt: MfiAuthenticationAttempt,
         bringUpTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
         locationProvider: Iap2LocationProvider? = null,
         vehicleStatusProvider: VehicleStatusProvider? = null,
@@ -30,6 +132,21 @@ class Iap2WirelessControlClient(
         onStopped: () -> Unit = {},
         onIncoming: (Iap2Frame) -> Unit = {},
         onProgress: (String) -> Unit = {},
+        onAuthenticated: (MfiAuthenticationReceipt) -> Unit = {},
+        onAppLinksUpdate: (Iap2AppLinksUpdate) -> Unit = {},
+        onAppLinksIconResponse: (Iap2AppLinksIconResponse) -> Unit = {},
+        /** Revalidate exact Wi-Fi group and AirPlay listener immediately before 0x5703/0x4301. */
+        endpointForControlSend: () -> Iap2WirelessCarPlayEndpoint?,
+        /** A signed-profile check evaluated immediately before each 0x4301 is constructed. */
+        allowClusterAssetAcquisition: (String, MfiAuthenticationIdentity) -> Boolean = { _, _ -> false },
+        debugAssetAcquisitionMarker: Boolean = false,
+        /** Exact Bluetooth-bootstrap receipt and handoff fence; tunnel mode never uses it. */
+        bootstrapStartSessionAllowed: (MfiAuthenticationReceipt) -> Boolean = { false },
+        /**
+         * Whether 0x4300 is answered with 0x4301. The AirPlay-tunneled link runs inside an
+         * already started session; iOS treats every 0x4301 as a new CarPlay session request.
+         */
+        startSessionOnAvailability: Boolean = true,
     ): Iap2WirelessControlResult {
         require(identification.wireless != null) {
             "Wireless control requires an Iap2IdentificationConfig with wireless transport"
@@ -62,8 +179,14 @@ class Iap2WirelessControlClient(
         onProgress("iap2 identification accepted")
         var stage = Iap2WirelessControlStage.IDENTIFIED
 
-        mfi.run(session, requireRemaining(bringUpDeadlineNanos), onProgress)
+        val authenticationReceipt = mfi.run(
+            session,
+            authenticationAttempt,
+            requireRemaining(bringUpDeadlineNanos),
+            onProgress,
+        )
         stage = Iap2WirelessControlStage.AUTHENTICATED
+        onAuthenticated(authenticationReceipt)
         onProgress("iap2 authentication accepted")
 
         for (subscription in Iap2WiredControlClient.subscriptions()) {
@@ -83,6 +206,8 @@ class Iap2WirelessControlClient(
         var locationActive = false
         var locationSentLogged = false
         var hidStarted = false
+        var ownedAppLinks: Iap2AppLinksLifecycle? = null
+        var ownedAppLinksIcons: Iap2AppLinksIconChannel? = null
         try {
             sendDuringBringUp(
                 Iap2HidMessages.startMediaPlaybackRemote(
@@ -93,6 +218,30 @@ class Iap2WirelessControlClient(
             )
             hidStarted = true
             onProgress("iap2 tx=0x6800 start media playback remote")
+            if (controlIdentification.appLinksEnabled) {
+                ownedAppLinks = Iap2AppLinksLifecycle(
+                    send = ::sendDuringControl,
+                    isAuthorized = {
+                        !session.isClosed &&
+                            (authenticationReceipt.isCurrentAuthenticationAttempt() ||
+                                authenticationReceipt.isLiveForUltraActivation())
+                    },
+                )
+                appLinksLifecycle = ownedAppLinks
+                if (controlIdentification.appLinksIconsEnabled) {
+                    val lifecycle = requireNotNull(ownedAppLinks)
+                    ownedAppLinksIcons = Iap2AppLinksIconChannel(
+                        lifecycle = lifecycle,
+                        send = ::sendDuringControl,
+                        isAuthorized = {
+                            !session.isClosed &&
+                                (authenticationReceipt.isCurrentAuthenticationAttempt() ||
+                                    authenticationReceipt.isLiveForUltraActivation())
+                        },
+                    )
+                    appLinksIconChannel = ownedAppLinksIcons
+                }
+            }
             onReady()
             // The control session is long-lived. Poll timeouts only wake this loop; they do not end it.
             while (true) {
@@ -143,7 +292,12 @@ class Iap2WirelessControlClient(
                                 "iap2 0x5703 ignored: maximum Wi-Fi configuration sends reached",
                             )
                         } else {
-                            sendDuringControl(accessoryWiFiConfiguration(endpoint))
+                            val liveEndpoint = resolveLiveWirelessControlEndpoint(
+                                endpoint,
+                                endpointForControlSend,
+                                ACCESSORY_WIFI_CONFIGURATION,
+                            )
+                            sendDuringControl(accessoryWiFiConfiguration(liveEndpoint))
                             stage = later(
                                 stage,
                                 if (postTransport) {
@@ -162,12 +316,38 @@ class Iap2WirelessControlClient(
                         }
                     }
 
-                    CARPLAY_AVAILABILITY -> {
+                    CARPLAY_AVAILABILITY -> if (!startSessionOnAvailability) {
+                        onProgress(
+                            "iap2 rx=0x4300 carplay-availability; " +
+                                "0x4301 not sent inside the active AirPlay session",
+                        )
+                    } else {
                         onProgress("iap2 rx=0x4300 carplay-availability")
-                        sendDuringControl(carPlayStartSession(endpoint))
-                        stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
-                        carPlayStartSessionsSent++
-                        onProgress("iap2 tx=0x4301 carplay-start-session")
+                        // A cached address or receipt may belong to a retired bootstrap.
+                        val reply = wirelessBootstrapStartSessionForControlSend(
+                            endpoint,
+                            endpointForControlSend,
+                            incoming.payload,
+                            authenticationReceipt.authenticationIdentity,
+                            allowClusterAssetAcquisition,
+                            bootstrapSendAllowed = {
+                                bootstrapStartSessionAllowed(authenticationReceipt)
+                            },
+                        )
+                        if (reply == null) {
+                            onProgress("iap2 0x4301 suppressed: stale Bluetooth bootstrap")
+                        } else {
+                            sendDuringControl(reply.frame)
+                            stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
+                            carPlayStartSessionsSent++
+                            onProgress("iap2 tx=0x4301 carplay-start-session")
+                            if (debugAssetAcquisitionMarker) {
+                                onProgress(clusterAssetAcquisitionSendMarker(
+                                    reply.frame,
+                                    reply.acquisitionRequested,
+                                ))
+                            }
+                        }
                     }
 
                     WIRELESS_CARPLAY_UPDATE -> {
@@ -195,7 +375,12 @@ class Iap2WirelessControlClient(
                                     "maximum Wi-Fi configuration sends reached",
                             )
                         } else {
-                            sendDuringControl(accessoryWiFiConfiguration(endpoint))
+                            val liveEndpoint = resolveLiveWirelessControlEndpoint(
+                                endpoint,
+                                endpointForControlSend,
+                                ACCESSORY_WIFI_CONFIGURATION,
+                            )
+                            sendDuringControl(accessoryWiFiConfiguration(liveEndpoint))
                             stage = later(
                                 stage,
                                 Iap2WirelessControlStage.POST_TRANSPORT_WIFI_CONFIG_SENT,
@@ -229,6 +414,39 @@ class Iap2WirelessControlClient(
                         locationSubscription.stop()
                     }
 
+                    Iap2AppLinksMessages.UPDATE_ID -> {
+                        val subscription = ownedAppLinks
+                        val appLinksGeneration = subscription?.activeGeneration()
+                        if (subscription != null && appLinksGeneration != null) {
+                            val update = try {
+                                Iap2AppLinksMessages.update(incoming)
+                            } catch (malformed: Iap2ProtocolException) {
+                                onProgress("iap2 ignored malformed 0xad01 AppLinksUpdate: ${malformed.message}")
+                                null
+                            }
+                            if (update != null && !subscription.deliverIfStarted(
+                                update, appLinksGeneration, onAppLinksUpdate,
+                            )) {
+                                onProgress("iap2 ignored stale 0xad01 AppLinksUpdate")
+                            }
+                        } else {
+                            onProgress("iap2 ignored unrequested 0xad01 AppLinksUpdate")
+                        }
+                    }
+
+                    Iap2AppLinksMessages.ICON_RESPONSE_ID -> {
+                        val iconChannel = ownedAppLinksIcons?.takeIf { appLinksIconChannel === it }
+                        when (iconChannel?.receive(incoming, onAppLinksIconResponse)) {
+                            Iap2AppLinksIconChannel.ReceiveOutcome.MALFORMED ->
+                                onProgress("iap2 ignored malformed 0xad04 AppIconResponse")
+                            Iap2AppLinksIconChannel.ReceiveOutcome.STALE ->
+                                onProgress("iap2 ignored stale 0xad04 AppIconResponse")
+                            Iap2AppLinksIconChannel.ReceiveOutcome.DELIVERED -> Unit
+                            null, Iap2AppLinksIconChannel.ReceiveOutcome.UNREQUESTED ->
+                                onProgress("iap2 ignored unrequested 0xad04 AppIconResponse")
+                        }
+                    }
+
                     else -> {
                         onProgress("iap2 rx=0x${incoming.messageId.toString(16).padStart(4, '0')}")
                         onIncoming(incoming)
@@ -237,6 +455,12 @@ class Iap2WirelessControlClient(
                 }
             }
         } finally {
+            ownedAppLinksIcons?.close()
+            if (ownedAppLinksIcons != null && appLinksIconChannel === ownedAppLinksIcons) {
+                appLinksIconChannel = null
+            }
+            ownedAppLinks?.close()
+            if (ownedAppLinks != null && appLinksLifecycle === ownedAppLinks) appLinksLifecycle = null
             vehicleReporter.stop()
             locationProvider?.stop()
             if (hidStarted && !session.isClosed) {
@@ -312,8 +536,27 @@ class Iap2WirelessControlClient(
             )
 
         /** Wireless 0x4301 reply carrying the receiver address, port and pairing identity. */
-        fun carPlayStartSession(endpoint: Iap2WirelessCarPlayEndpoint): Iap2Frame =
-            Iap2CarPlayMessages.startSession(
+        fun carPlayStartSession(
+            endpoint: Iap2WirelessCarPlayEndpoint,
+            @Suppress("UNUSED_PARAMETER")
+            availabilityPayload: ByteArray? = null,
+            actualMfiAuthenticationIdentity: MfiAuthenticationIdentity? = null,
+            allowClusterAssetAcquisition: (String, MfiAuthenticationIdentity) -> Boolean = { _, _ -> false },
+        ): Iap2Frame {
+            // A locally authorized, installed asset may need to bootstrap the phone's feature
+            // state. The previous 0x4300 mask is not a prerequisite for advertising that asset.
+            val clusterAsset = endpoint.clusterAssetCatalog.assetOrNull(endpoint.clusterAssetKey)
+                .takeIf { !endpoint.sdkVersion.isNullOrBlank() }
+            val acquisition = endpoint.clusterAssetAcquisitionIntent?.takeIf { intent ->
+                actualMfiAuthenticationIdentity != null &&
+                    intent.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity &&
+                    try {
+                        allowClusterAssetAcquisition(intent.assetId, actualMfiAuthenticationIdentity)
+                    } catch (_: Exception) {
+                        false
+                    }
+            }
+            return Iap2CarPlayMessages.startSession(
                 wireless = Iap2WirelessSessionParameters(
                     ssid = endpoint.ssid,
                     passphrase = endpoint.passphrase,
@@ -325,7 +568,12 @@ class Iap2WirelessControlClient(
                 deviceIdentifier = endpoint.deviceIdentifier,
                 publicKey = endpoint.publicKey,
                 sourceVersion = endpoint.sourceVersion,
+                sdkVersion = endpoint.sdkVersion?.takeIf { clusterAsset != null },
+                clusterAsset = clusterAsset,
+                clusterAssetAcquisitionIntent = acquisition,
+                actualMfiAuthenticationIdentity = actualMfiAuthenticationIdentity,
             )
+        }
 
         private fun later(
             current: Iap2WirelessControlStage,
@@ -371,6 +619,10 @@ class Iap2WirelessCarPlayEndpoint(
     val deviceIdentifier: String,
     val publicKey: String,
     val sourceVersion: String,
+    val clusterAssetCatalog: Iap2ClusterAssetCatalog = Iap2ClusterAssetCatalog.EMPTY,
+    val clusterAssetKey: Iap2ClusterAssetKey? = null,
+    val sdkVersion: String? = null,
+    val clusterAssetAcquisitionIntent: Iap2ClusterAssetAcquisitionIntent? = null,
 ) {
     val ipAddresses: List<String> = ipAddresses.toList()
 
@@ -393,6 +645,11 @@ class Iap2WirelessCarPlayEndpoint(
         require('\u0000' !in publicKey) { "publicKey must not contain U+0000" }
         require(sourceVersion.isNotEmpty()) { "sourceVersion is required and must not be empty" }
         require('\u0000' !in sourceVersion) { "sourceVersion must not contain U+0000" }
+        require(sdkVersion == null || '\u0000' !in sdkVersion) { "sdkVersion must not contain U+0000" }
+        require(
+            clusterAssetAcquisitionIntent == null ||
+                (clusterAssetKey == null && clusterAssetCatalog.profiles.isEmpty() && sdkVersion == null),
+        ) { "cluster asset acquisition and preinstalled asset selection are mutually exclusive" }
     }
 }
 

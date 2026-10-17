@@ -12,8 +12,9 @@
   `/dev/i2c-N` devices, local certificate/private-key files, and Remote MFI
   authentication (see the API below).
 - Wired and wireless CarPlay connections.
-- CarPlay Ultra triggering (the protocol stack is untested/incomplete, but it
-  can trigger the CarPlay Ultra prompt on an iPhone).
+- Experimental CarPlay Ultra interoperability: hardened multi-channel RCS,
+  UI Sync, CAF/Vehicle Data foundations, and independently configurable
+  instrument display output. Unsupported private features remain disabled.
 - Voice, navigation, and music multi-channel audio output mapped to the
   corresponding Android channels.
 - Dynamic Activity resizing with automatic re-handshaking to the new
@@ -50,9 +51,47 @@
 Use a recent Chrome, Edge, or Safari. If the browser cannot play H.265, turn
 off `HEVC (H.265)` in Settings.
 
+## CarPlay Ultra
+
+Settings can declare the instrument display independently of browser output.
+The experimental UI Sync codec, per-display router, and presentation bridge are
+implemented and tested, but the app does not advertise UI Sync until an integrator
+supplies an authorized CarKit vehicle identity and matching theme provisioning.
+Ordinary type-111 video, local preview, PIP, and the custom cluster WebDisplay do
+not depend on that provisioning.
+
+The repository includes strict profile/theme parsing, an exact-session MFi receipt seam,
+a V2 multi-ingress/multi-output graph, acknowledged decoder Surface retirement, a bounded
+UI Sync snapshot pipeline, direction-aware typed commands, a per-session Android resource
+coordinator, and an API 28 EGL14/GLES2 external-OES backend. Logical-to-pixel mapping and
+diagnostic theme scene geometry preserve CarPlay logical units without using Android density.
+An issuer-bound compiled-runtime manifest now ties the verified profile to the exact UI Sync
+schema/binding/theme program, renderer implementation, display/output/ingress plan, CAF schema,
+decoder, and handler identities. The activation coordinator creates and owns the resulting
+`AirPlayUltraRuntime` itself, so an AA05/profile revocation cannot be escaped by transferring raw
+UI Sync or CAF provisioning to another owner.
+The evidenced APAP packet, ChaCha20-Poly1305, TCP-length and APTransport control codecs are joined
+by a detached, bounded ingress runtime for an already-authorized injected stream and key.
+`mainBuffered` remains unadvertised until its live listener, SETUP/control transaction, decoder,
+clocked audio sink and session-bound readiness are implemented.
+The AA05 authorization lifecycle is wired into the product Host, but the default provider and
+vehicle identity authority remain unavailable. These are not a complete Ultra implementation:
+there is no authorized complete semantic/theme factory, UI Sync renderer/output Host wiring, concrete cross-screen
+atomic binder, pinned OEM verifier, or authorized profile compiler. The product profile provider
+remains `Disabled`; Vehicle State Protocol, UI Sync, theme transfer, UpdateData, LoggingData, and
+other unconfirmed/private capabilities are not advertised.
+See [the implementation and evidence matrix](docs/carplay-ultra.md).
+
+AirPlay physical millimetres affect the UI scale chosen by the phone. An experimental
+migration briefly changed width to longest-edge semantics without converting the stored value,
+which could make portrait CarPlay text and icons much larger. The current version repairs that test
+preference and uses a rotation-stable shortest-edge calibration by default; it does not modify
+Android's global DPI.
+
 ## Current progress
 
-It works 👍. It has been tested on car head units and phones. If you encounter
+Ordinary CarPlay works 👍; this statement does not mean the disabled Ultra stack is product-ready.
+The ordinary path has been tested on car head units and phones. If you encounter
 an incompatible car head unit, please open an issue and attach your log from
 `/sdcard/Android/data/com.shilapi.xcertplay/files/logs/xcertplay.log`.
 
@@ -100,8 +139,8 @@ connecting to a local MFi chip for authentication.
 
 ## Requirements
 
-- JDK 17 or newer to launch Gradle. The daemon resolves Java 25 through the
-  Gradle toolchain.
+- A working JDK 17 or newer to launch Gradle. The daemon uses the JDK selected
+  by `JAVA_HOME` (or the Java executable on `PATH`); CI selects its own JDK.
 - Android SDK Platform 37.
 - Android 9 (API 28) or newer.
   On Android 9, Wi-Fi P2P 5 GHz mode is unavailable and LocalOnlyHotspot is used instead.
@@ -115,13 +154,13 @@ On Windows PowerShell:
 
 ```powershell
 $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-.\gradlew.bat :shared:testDebugUnitTest :common:lintDebug :mobile:lintDebug :automotive:lintDebug :mobile:assembleDebug :automotive:assembleDebug
+.\gradlew.bat :shared:testDebugUnitTest :common:testDebugUnitTest :common:lintDebug :mobile:lintDebug :automotive:lintDebug :mobile:assembleDebug :automotive:assembleDebug
 ```
 
 On macOS or Linux:
 
 ```bash
-./gradlew :shared:testDebugUnitTest :common:lintDebug :mobile:lintDebug :automotive:lintDebug :mobile:assembleDebug :automotive:assembleDebug
+./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :common:lintDebug :mobile:lintDebug :automotive:lintDebug :mobile:assembleDebug :automotive:assembleDebug
 ```
 
 Unsigned release APKs:

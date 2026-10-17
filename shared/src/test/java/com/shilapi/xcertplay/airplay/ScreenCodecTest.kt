@@ -1,11 +1,28 @@
 package com.shilapi.xcertplay.airplay
 
 import org.junit.Assert.assertArrayEquals
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenCodecTest {
+    @Test
+    fun videoFramesShorterThanTheAuthenticationTagAreRejected() {
+        var rejected = false
+        try {
+            ScreenCodec.decryptFrame(
+                key = ByteArray(32),
+                counter = 0,
+                header = ByteArray(128),
+                body = ByteArray(ScreenCodec.TAG_SIZE - 1),
+            )
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+    }
+
     @Test
     fun validLengthPrefixesBecomeAnnexBInPlace() {
         val first = byteArrayOf(0x40, 0x01)

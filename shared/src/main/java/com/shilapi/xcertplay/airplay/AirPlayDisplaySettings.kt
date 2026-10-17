@@ -1,6 +1,8 @@
 package com.shilapi.xcertplay.airplay
 
 enum class AirPlayPhysicalSizeBasis {
+    SHORTEST_EDGE,
+    LONGEST_EDGE,
     WIDTH,
     HEIGHT,
 }
@@ -21,6 +23,9 @@ object AirPlayDisplaySettings {
     const val MAX_WIDTH_PHYSICAL_MM = 400
     const val WIDTH_PHYSICAL_MM_STEP = 50
     const val DEFAULT_WIDTH_PHYSICAL_MM = 200
+    // Ordinary CarPlay historically interprets the user's millimetres as display width. Changing
+    // this default to SHORTEST_EDGE enlarged landscape /info physical dimensions and made iPhone
+    // text/icons visibly larger. Rotation-stable calibration remains an explicit user choice.
     val DEFAULT_PHYSICAL_SIZE_BASIS = AirPlayPhysicalSizeBasis.WIDTH
     const val MIN_REPORTED_PHYSICAL_MM = 1
     const val MAX_REPORTED_PHYSICAL_MM = 2_000
@@ -54,6 +59,12 @@ object AirPlayDisplaySettings {
             "Maximum display dimensions must be positive"
         }
         val referencePixels = when (basis) {
+            AirPlayPhysicalSizeBasis.SHORTEST_EDGE ->
+                minOf(currentWidthPixels, currentHeightPixels).toDouble() /
+                    minOf(maximumWidthPixels, maximumHeightPixels)
+            AirPlayPhysicalSizeBasis.LONGEST_EDGE ->
+                maxOf(currentWidthPixels, currentHeightPixels).toDouble() /
+                    maxOf(maximumWidthPixels, maximumHeightPixels)
             AirPlayPhysicalSizeBasis.WIDTH ->
                 currentWidthPixels.toDouble() / maximumWidthPixels
             AirPlayPhysicalSizeBasis.HEIGHT ->
@@ -63,6 +74,20 @@ object AirPlayDisplaySettings {
         val widthMm: Double
         val heightMm: Double
         when (basis) {
+            AirPlayPhysicalSizeBasis.SHORTEST_EDGE -> if (currentWidthPixels <= currentHeightPixels) {
+                widthMm = referenceMm
+                heightMm = widthMm * currentHeightPixels / currentWidthPixels
+            } else {
+                heightMm = referenceMm
+                widthMm = heightMm * currentWidthPixels / currentHeightPixels
+            }
+            AirPlayPhysicalSizeBasis.LONGEST_EDGE -> if (currentWidthPixels >= currentHeightPixels) {
+                widthMm = referenceMm
+                heightMm = widthMm * currentHeightPixels / currentWidthPixels
+            } else {
+                heightMm = referenceMm
+                widthMm = heightMm * currentWidthPixels / currentHeightPixels
+            }
             AirPlayPhysicalSizeBasis.WIDTH -> {
                 widthMm = referenceMm
                 heightMm = widthMm * currentHeightPixels / currentWidthPixels

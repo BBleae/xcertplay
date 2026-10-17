@@ -1,5 +1,7 @@
 package com.shilapi.xcertplay
 
+import android.content.ContextWrapper
+import android.view.Surface
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayContact
 import com.shilapi.xcertplay.airplay.AirPlayDisplayConfig
@@ -7,7 +9,13 @@ import com.shilapi.xcertplay.airplay.AirPlayInfoPlist
 import com.shilapi.xcertplay.airplay.AirPlayInsets
 import com.shilapi.xcertplay.airplay.VideoCodec
 import com.shilapi.xcertplay.media.CarPlayTouchMapper
+import com.shilapi.xcertplay.media.AndroidMediaSink
+import com.shilapi.xcertplay.media.AndroidSurfaceReservationState
+import com.shilapi.xcertplay.ultra.AndroidMediaSinkPhysicalLegacyHandoffPort
+import com.shilapi.xcertplay.ultra.PhysicalLegacyHandoffResult
+import java.io.Closeable
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -25,8 +33,201 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import org.junit.Assert.*
 import org.junit.Test
+import sun.misc.Unsafe
 
 class CarPlayWebDisplayTest {
+    @Test fun busySuccessorSurfaceDoesNotDetachStillVisibleOldPreview() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val competingSink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val busySurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val session = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        session.bind(sink)
+        assertTrue(session.preview(111, oldSurface))
+        competingSink.setSurface(111, busySurface)
+        assertFalse(session.preview(111, busySurface))
+        assertTrue(session.preview(111, oldSurface)) // metadata and decoder route stayed current
+        assertEquals(AndroidSurfaceReservationState.RESERVED,
+            AndroidMediaSink.surfaceReservationState(oldSurface))
+        competingSink.clearSurface(111, busySurface)
+        assertTrue(session.preview(111, busySurface))
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(oldSurface))
+        session.close()
+    }
+
+    @Test fun handoffGateRejectsOldAndSuccessorSessionUntilExactReservationRetires() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val successorSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val old = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        old.bind(sink)
+        assertTrue(old.preview(111, oldSurface))
+        val held = (AndroidMediaSinkPhysicalLegacyHandoffPort(sink)
+            .retireAndReserve(111, oldSurface) as PhysicalLegacyHandoffResult.Reserved).reservation
+        assertFalse(old.preview(111, oldSurface))
+        val successor = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        successor.bind(sink)
+        assertFalse(successor.preview(111, oldSurface))
+        assertFalse(successor.preview(111, successorSurface))
+        assertEquals(AndroidSurfaceReservationState.RESERVED,
+            AndroidMediaSink.surfaceReservationState(oldSurface))
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(successorSurface))
+        held.close()
+        assertFalse(old.preview(111, oldSurface)) // old Session remains suspended
+        assertFalse(successor.preview(111, oldSurface)) // exact old Surface is tombstoned
+        assertTrue(successor.preview(111, successorSurface))
+        successor.close()
+        old.close()
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(successorSurface))
+    }
+
+    @Test fun deniedHandoffTombstonesOldSurfaceButAllowsFreshPreviewInSameSession() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val competingSink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val freshSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val session = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        session.bind(sink)
+        competingSink.setSurface(111, oldSurface)
+
+        assertTrue(AndroidMediaSinkPhysicalLegacyHandoffPort(sink)
+            .retireAndReserve(111, oldSurface) is PhysicalLegacyHandoffResult.Denied)
+        competingSink.clearSurface(111, oldSurface)
+        assertFalse(session.preview(111, oldSurface))
+        assertTrue(session.preview(111, freshSurface))
+        session.close()
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(freshSurface))
+    }
+
+    @Test fun successorPreviewCannotAttachBetweenHandoffBeginAndSinkCapture() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val successorSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val old = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        old.bind(sink)
+        assertTrue(old.preview(111, oldSurface))
+        val gate = requireNotNull(sink.beginPhysicalSurfaceHandoff(111, oldSurface))
+        val successor = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        successor.bind(sink)
+        assertFalse(successor.preview(111, successorSurface))
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(successorSurface))
+        gate.close() // no retired handoff yet; admission may be retried
+        assertTrue(successor.preview(111, successorSurface))
+        successor.close()
+        old.close()
+    }
+
+    @Test fun ordinaryWebDisplayCloseDetachesExactPreviewBeforeLaterPhysicalHandoff() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val surface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val session = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        session.bind(sink)
+        session.preview(111, surface)
+        assertEquals(AndroidSurfaceReservationState.RESERVED,
+            AndroidMediaSink.surfaceReservationState(surface))
+        session.close()
+        assertNull(CarPlayWebDisplayFactory.find(sink))
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(surface))
+        val handoff = AndroidMediaSinkPhysicalLegacyHandoffPort(sink).retireAndReserve(111, surface)
+        val reservation = (handoff as PhysicalLegacyHandoffResult.Reserved).reservation
+        assertTrue(reservation.isHeld)
+        reservation.close() // no EGL owner; no stale WebDisplay route may be restored
+        assertFalse(reservation.isHeld)
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(surface))
+    }
+
+    @Test fun closingOldWebDisplayNeverClearsSuccessorPreviewSurface() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val successorSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val old = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        val successor = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        old.bind(sink)
+        old.preview(111, oldSurface)
+        successor.bind(sink)
+        successor.preview(111, successorSurface)
+        old.close()
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(oldSurface))
+        assertEquals(AndroidSurfaceReservationState.RESERVED,
+            AndroidMediaSink.surfaceReservationState(successorSurface))
+        successor.close()
+        assertEquals(AndroidSurfaceReservationState.FREE,
+            AndroidMediaSink.surfaceReservationState(successorSurface))
+    }
+
+    @Test fun physicalHandoffRestoresOnlyExactCurrentWebPreviewWithoutOverwritingSuccessor() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val context = unsafe.allocateInstance(ContextWrapper::class.java) as ContextWrapper
+        val sink = AndroidMediaSink(context)
+        val oldSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val successorSurface = unsafe.allocateInstance(Surface::class.java) as Surface
+        val first = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        first.bind(sink)
+        var restores = 0
+        assertTrue(first.restorePreviewAfterPhysicalHandoff(111, oldSurface, sink, 0L) {
+            restores++
+            true
+        })
+        assertFalse(first.restorePreviewAfterPhysicalHandoff(111, successorSurface, sink, 0L) {
+            restores++
+            true
+        })
+        assertEquals(1, restores)
+
+        val second = testSession(WebDisplayChannel(111, 1280, 480)) {}
+        second.bind(sink)
+        assertFalse(first.restorePreviewAfterPhysicalHandoff(111, oldSurface, sink, 1L) {
+            restores++
+            true
+        })
+        assertEquals(1, restores)
+        first.close()
+        second.close()
+    }
+
+    @Test fun previewAbaCannotRestoreOldActivityAfterSuccessorAttachedAndCleared() {
+        val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }.get(null) as Unsafe
+        val old = unsafe.allocateInstance(Surface::class.java) as Surface
+        val successor = unsafe.allocateInstance(Surface::class.java) as Surface
+        val previews = WebDisplayPreviewRoutes()
+        previews.replace(111, old, attach = {}, detach = {})
+        assertTrue(previews.clearIfCurrent(111, old, detach = {}))
+        val handoffGeneration = previews.generation(111)
+        previews.replace(111, successor, attach = {}, detach = {})
+        assertTrue(previews.clearIfCurrent(111, successor, detach = {}))
+        assertNull(previews.currentSurface(111))
+        assertFalse(previews.rememberRestoredIfSameGeneration(111, old, handoffGeneration))
+        assertNull(previews.currentSurface(111))
+    }
+
     private class Recorder : WebDisplayViewer.Transport {
         override fun send(message: ByteArray) = Unit
         override fun send(message: String) = Unit
@@ -193,6 +394,245 @@ class CarPlayWebDisplayTest {
         assertEquals(1, reports.size)
     }
 
+    @Test fun failedServerStartStopsTheExactOwnerBeforePropagatingOriginalFailure() {
+        val server = Any()
+        val startFailure = IOException("injected start failure")
+        var stopAttempts = 0
+
+        val observed = assertThrows(IOException::class.java) {
+            startOwnedWebDisplayServer(
+                server = server,
+                start = { throw startFailure },
+                stop = {
+                    assertSame(server, it)
+                    stopAttempts += 1
+                },
+            )
+        }
+
+        assertSame(startFailure, observed)
+        assertEquals(1, stopAttempts)
+    }
+
+    @Test fun failedStartCleanupEscapesAsRetryableExactServerOwner() {
+        val server = Any()
+        val startFailure = IOException("injected start failure")
+        val stopFailure = IOException("injected stop failure")
+        var stopAttempts = 0
+
+        val owner = assertThrows(WebDisplayServerConstructionException::class.java) {
+            startOwnedWebDisplayServer(
+                server = server,
+                start = { throw startFailure },
+                stop = {
+                    assertSame(server, it)
+                    stopAttempts += 1
+                    if (stopAttempts == 1) throw stopFailure
+                },
+            )
+        }
+
+        assertSame(startFailure, owner.startFailure)
+        assertSame(startFailure, owner.cause)
+        assertTrue(owner.ownsServer(server))
+        assertFalse(owner.isCleanupComplete())
+        assertEquals(listOf(stopFailure), owner.suppressed.toList())
+
+        owner.close()
+        owner.close()
+        assertTrue(owner.isCleanupComplete())
+        assertEquals(2, stopAttempts)
+    }
+
+    @Test fun fatalStartErrorPropagatesByIdentityWithRetryOwnerAttached() {
+        val server = Any()
+        val fatal = AssertionError("fatal start")
+        val stopFailure = IOException("retry stop")
+        var stopAttempts = 0
+
+        val observed = assertThrows(AssertionError::class.java) {
+            startOwnedWebDisplayServer(
+                server = server,
+                start = { throw fatal },
+                stop = {
+                    assertSame(server, it)
+                    stopAttempts += 1
+                    if (stopAttempts == 1) throw stopFailure
+                },
+            )
+        }
+
+        assertSame(fatal, observed)
+        val owner = observed.suppressed.single() as WebDisplayServerConstructionException
+        assertSame(fatal, owner.startFailure)
+        assertNull(owner.cause)
+        assertTrue(owner.ownsServer(server))
+        assertEquals(listOf(stopFailure), owner.suppressed.toList())
+        owner.close()
+        assertTrue(owner.isCleanupComplete())
+        assertEquals(2, stopAttempts)
+    }
+
+    @Test fun fatalStopErrorPropagatesByIdentityWithoutDroppingConstructionOwner() {
+        val server = Any()
+        val startFailure = IOException("start failed")
+        val fatal = AssertionError("fatal stop")
+        var stopAttempts = 0
+
+        val observed = assertThrows(AssertionError::class.java) {
+            startOwnedWebDisplayServer(
+                server = server,
+                start = { throw startFailure },
+                stop = {
+                    assertSame(server, it)
+                    stopAttempts += 1
+                    if (stopAttempts == 1) throw fatal
+                },
+            )
+        }
+
+        assertSame(fatal, observed)
+        val owner = observed.suppressed.single() as WebDisplayServerConstructionException
+        assertSame(startFailure, owner.startFailure)
+        assertTrue(owner.ownsServer(server))
+        owner.close()
+        assertTrue(owner.isCleanupComplete())
+        assertEquals(2, stopAttempts)
+    }
+
+    @Test fun sessionCloseRetainsExactPresentationAndServerOwnersForRetry() {
+        val channel = WebDisplayChannel(CarPlayWebDisplayFactory.CLUSTER, 1280, 480)
+        val serverFailure = IOException("injected server stop failure")
+        var serverStops = 0
+        val session = testSession(channel) {
+            serverStops += 1
+            if (serverStops == 1) throw serverFailure
+        }
+        val adapterFailure = IOException("injected presentation close failure")
+        val adapterOwner = Any()
+        val observedOwners = mutableListOf<Any>()
+        var adapterCloses = 0
+        var admittedCreations = 0
+        session.replaceClusterPresentation { target ->
+            admittedCreations += 1
+            Closeable {
+                observedOwners += adapterOwner
+                adapterCloses += 1
+                if (adapterCloses == 1) throw adapterFailure
+                target.close()
+            }
+        }
+
+        val first = assertThrows(IOException::class.java) { session.close() }
+        assertSame(adapterFailure, first)
+        assertEquals(listOf(serverFailure), first.suppressed.toList())
+        assertEquals(1, adapterCloses)
+        assertEquals(1, serverStops)
+        assertEquals(listOf(adapterOwner), observedOwners)
+
+        // First close seals admission even though neither external owner completed.
+        session.replaceClusterPresentation {
+            admittedCreations += 1
+            Closeable { fail("closed session admitted a replacement") }
+        }.close()
+        assertEquals(1, admittedCreations)
+
+        session.close()
+        session.close()
+        assertEquals(2, adapterCloses)
+        assertEquals(2, serverStops)
+        assertEquals(listOf(adapterOwner, adapterOwner), observedOwners)
+    }
+
+    @Test fun sessionCloseDoesNotRepeatSuccessfulPresentationWhenServerStopNeedsRetry() {
+        val channel = WebDisplayChannel(CarPlayWebDisplayFactory.CLUSTER, 1280, 480)
+        val stopFailure = IOException("retry server stop")
+        var serverStops = 0
+        val session = testSession(channel) {
+            serverStops += 1
+            if (serverStops == 1) throw stopFailure
+        }
+        var adapterCloses = 0
+        session.replaceClusterPresentation { target ->
+            Closeable {
+                adapterCloses += 1
+                target.close()
+            }
+        }
+
+        assertSame(stopFailure, assertThrows(IOException::class.java) { session.close() })
+        assertEquals(1, adapterCloses)
+        assertEquals(1, serverStops)
+
+        session.close()
+        session.close()
+        assertEquals("successful presentation close must not repeat", 1, adapterCloses)
+        assertEquals(2, serverStops)
+    }
+
+    @Test fun sessionClosePropagatesFatalErrorByIdentityAndRetriesItsOwner() {
+        val channel = WebDisplayChannel(CarPlayWebDisplayFactory.CLUSTER, 1280, 480)
+        val fatal = AssertionError("injected fatal presentation close failure")
+        var serverStops = 0
+        val session = testSession(channel) { serverStops += 1 }
+        var adapterCloses = 0
+        session.replaceClusterPresentation { target ->
+            Closeable {
+                adapterCloses += 1
+                if (adapterCloses == 1) throw fatal
+                target.close()
+            }
+        }
+
+        val observed = assertThrows(AssertionError::class.java) { session.close() }
+        assertSame(fatal, observed)
+        assertEquals(1, adapterCloses)
+        assertEquals(1, serverStops)
+
+        session.close()
+        assertEquals(2, adapterCloses)
+        assertEquals("successful server stop must not repeat", 1, serverStops)
+    }
+
+    @Test fun fatalServerErrorSupersedesOrdinaryPresentationFailureWithoutLosingEitherOwner() {
+        val channel = WebDisplayChannel(CarPlayWebDisplayFactory.CLUSTER, 1280, 480)
+        val adapterFailure = IOException("retry presentation")
+        val fatal = AssertionError("fatal server stop")
+        var serverStops = 0
+        val session = testSession(channel) {
+            serverStops += 1
+            if (serverStops == 1) throw fatal
+        }
+        var adapterCloses = 0
+        session.replaceClusterPresentation { target ->
+            Closeable {
+                adapterCloses += 1
+                if (adapterCloses == 1) throw adapterFailure
+                target.close()
+            }
+        }
+
+        val observed = assertThrows(AssertionError::class.java) { session.close() }
+        assertSame(fatal, observed)
+        assertEquals(listOf(adapterFailure), fatal.suppressed.toList())
+
+        session.close()
+        assertEquals(2, adapterCloses)
+        assertEquals(2, serverStops)
+    }
+
+    private fun testSession(
+        channel: WebDisplayChannel,
+        stopServer: () -> Unit,
+    ) = CarPlayWebDisplayFactory.Session(
+        configs = mapOf(
+            CarPlayWebDisplayFactory.CLUSTER to
+                CarPlayWebDisplayConfig(enabled = true, width = 1280, height = 480),
+        ),
+        displays = mapOf(CarPlayWebDisplayFactory.CLUSTER to channel),
+        stopServer = stopServer,
+    )
+
     /** A server on a fresh self-signed identity, and a client that trusts exactly that certificate. */
     private fun tlsServer(channels: Map<Int, WebDisplayChannel>, sendTouch: (List<AirPlayContact>) -> Boolean): Pair<WebDisplayServer, HttpClient> {
         val file = File(Files.createTempDirectory("tls").toFile(), "web.p12")
@@ -259,13 +699,17 @@ class CarPlayWebDisplayTest {
         val now = 1_800_000_000_000L
         val first = WebDisplayCertificate.certificate(WebDisplayCertificate.identity(file, listOf("192.168.1.5"), now))
         first.checkValidity(java.util.Date(now)); first.verify(first.publicKey)
-        assertEquals(setOf("192.168.1.5", "127.0.0.1"), first.subjectAlternativeNames.map { it[1] }.toSet())
+        assertEquals(
+            setOf("192.168.1.5", "127.0.0.1"),
+            first.subjectAlternativeNames.filter { it[0] == 7 }.map { it[1] }.toSet(),
+        )
+        assertEquals(setOf("localhost"), first.subjectAlternativeNames.filter { it[0] == 2 }.map { it[1] }.toSet())
         assertEquals(listOf("1.3.6.1.5.5.7.3.1"), first.extendedKeyUsage)
         assertEquals(first, WebDisplayCertificate.certificate(WebDisplayCertificate.identity(file, listOf("192.168.1.5"), now + 1000)))
         val moved = WebDisplayCertificate.certificate(WebDisplayCertificate.identity(file, listOf("10.0.0.2"), now))
         assertNotEquals(first, moved)
         assertEquals("earlier addresses stay valid", setOf("192.168.1.5", "127.0.0.1", "10.0.0.2"),
-            moved.subjectAlternativeNames.map { it[1] }.toSet())
+            moved.subjectAlternativeNames.filter { it[0] == 7 }.map { it[1] }.toSet())
         val renewed = WebDisplayCertificate.certificate(WebDisplayCertificate.identity(file, listOf("10.0.0.2"), now + TimeUnit.DAYS.toMillis(380)))
         assertNotEquals(moved, renewed)
     }

@@ -10,7 +10,7 @@
 - 面向 Android 和 Android Automotive OS 的 CarPlay 主机应用。
 - 支持 CH341 桥接 MFI 芯片、原生 `/dev/i2c-N` 设备连接的 MFI 芯片、本地证书/私钥文件和 Remote MFI 认证（API 见下）。
 - 支持 CarPlay 有线或无线连接。
-- 支持触发 CarPlay Ultra （未测试/未完成的协议栈，但是确实可以在 iPhone 上触发 CarPlay Ultra 的提示）。
+- 实验性 CarPlay Ultra 互操作：包含加固后的多路 RCS、UI Sync、CAF/车辆数据基础，以及与网页输出解耦的仪表屏声明；证据不足的私有能力不会宣告。
 - 支持语音、导航、音乐多通道音频输出并 mapping 至 Android 的对应通道。
 - 支持动态 Activity resize ，并自动重新握手至新的分辨率。
 - 支持主屏和仪表的独立网页输出（浏览器直接解码 H.264/H.265，主屏支持触控和音频）。
@@ -37,9 +37,38 @@
 
 建议使用较新的 Chrome / Edge / Safari；浏览器不支持 H.265 时，在设置中关闭 `HEVC (H.265)`。
 
+## CarPlay Ultra
+
+设置中可独立声明仪表屏。实验性 UI Sync 编解码、逐显示器路由和呈现桥已经实现并测试，
+但在集成方提供获授权的 CarKit 车辆身份及匹配主题配置前，应用不会向手机宣告 UI Sync。
+普通 type-111 视频、本地预览、PIP 和自定义仪表网页不依赖这些配置。
+
+项目已经包含严格的 profile/主题解析、精确绑定会话的 MFi receipt 接口、V2 多输入/
+多输出 graph、带解码器确认的 Surface 退休、方向明确的受限 UI Sync 语义、逐会话
+Android 资源协调器，以及兼容 API 28 的 EGL14/GLES2 external-OES 后端。逻辑坐标映射
+与诊断主题 scene 不读取 Android density。这些只是默认禁用的集成基础，不代表完整或
+可启用的 Ultra。新增的 compiled-runtime manifest 会把已验证 profile 与 UI Sync 的
+schema/binding/主题程序、renderer 实现、全部 display/output/ingress，以及 CAF 的
+schema、decoder 和 handler 身份精确绑定；激活协调器会直接创建并持有最终
+`AirPlayUltraRuntime`，因此 raw UI Sync/CAF provisioning 不能通过 ownership transfer
+逃逸 AA05/profile 撤销。项目也已加入有证据支撑的 APAP packet、ChaCha20-Poly1305、
+TCP 长度和 APTransport control 的严格独立 codec，以及只接收已授权注入 stream/key 的
+有界入站运行时；在 live listener、SETUP/control 事务、decoder、时钟化音频 sink 与逐会话
+readiness 完成前仍不会宣告 `mainBuffered`。AA05 授权生命周期已接入产品 Host，但默认 provider 与车辆身份源不可用；仍缺获授权的完整语义/主题工厂、UI Sync renderer/输出 Host 接线、真实跨屏原子
+批量 binder、固定 OEM 信任验证器和获授权的 profile 编译器。产品 profile provider 保持
+`Disabled`；Vehicle State Protocol、UI Sync、主题传输、UpdateData、LoggingData 等
+尚未确认或依赖私有授权的能力不会宣告。
+实现范围与证据矩阵见 [CarPlay Ultra 文档](docs/carplay-ultra.md)。
+
+显示物理尺寸会参与 iPhone 侧的界面缩放。实验分支曾把默认基准从“宽度”迁移到“最长
+边”但没有换算毫米值，可能导致竖屏 CarPlay 图标和文字明显变大；当前版本会自动修复
+该测试偏好，并默认用横竖屏一致的“最短边”校准。这不是 Android 全局 DPI 修改。
+
 ## 当前进度
 
-他运转👍，已在车机/手机平台测试，如果出现部分车机不适配的情况欢迎 issue （并附上你的 log ，位于 `/sdcard/Android/data/com.shilapi.xcertplay/files/logs/xcertplay.log`）
+普通 CarPlay 已可运行👍；这不表示默认禁用的 Ultra 已具备产品可用性。普通路径已在车机/
+手机平台测试，如果出现适配问题欢迎 issue（请附上
+`/sdcard/Android/data/com.shilapi.xcertplay/files/logs/xcertplay.log`）。
 
 转接板：[CH341-to-MFI](https://github.com/shilapi/ch341-to-mfi-chip)
 
@@ -80,7 +109,7 @@ Remote MFi 客户端把远程服务当作一块 MFi 芯片远程调用，抑或�
 
 ## 环境要求
 
-- 启动 Gradle 需要 JDK 17 或更高版本；daemon 通过 Gradle toolchain 解析 Java 25。
+- 启动 Gradle 需要可正常运行的 JDK 17 或更高版本；daemon 使用 `JAVA_HOME`（或 `PATH` 中的 Java）选定的 JDK，CI 单独指定 JDK。
 - Android SDK Platform 37。
 - Android 9（API 28）或更高版本。
   在 Android 9 上不可用 Wi-Fi P2P 5 GHz 模式，应用会改用 LocalOnlyHotspot。

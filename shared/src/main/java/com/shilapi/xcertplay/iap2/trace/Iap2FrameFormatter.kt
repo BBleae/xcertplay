@@ -18,7 +18,7 @@ enum class Iap2TraceDirection(val label: String) {
  * Human-readable rendering for the on-device iAP2 trace.
  *
  * Known endpoints use their field names and wire types. Unknown/medium-confidence endpoints still
- * show ordered parameter IDs and safe scalar/string/byte summaries, so no frame is invisible just
+ * show ordered parameter IDs and bounded structural summaries, so no frame is invisible just
  * because it has not received a strict schema yet.
  */
 object Iap2FrameFormatter {
@@ -47,9 +47,13 @@ object Iap2FrameFormatter {
                 specs = endpoint?.fields.orEmpty(),
                 depth = 1,
                 lines = lines,
+                redactAll = frame.messageId in SENSITIVE_MESSAGE_IDS,
             )
         }
-        lines += "  raw-body=${hexPreview(frame.payload)}"
+        // Raw CSM bodies may contain Wi-Fi credentials, authentication material, locations, or
+        // personal media metadata. Structural field summaries above are enough for normal traces.
+        lines += if (frame.payload.isEmpty()) "  raw-body=<empty>" else
+            "  raw-body=<${frame.payload.size} bytes omitted>"
 
         val endpointText = endpoint?.let { " ${it.name}" }.orEmpty()
         return buildString {
@@ -96,15 +100,19 @@ object Iap2FrameFormatter {
         specs: List<Iap2FieldSpec>,
         depth: Int,
         lines: MutableList<String>,
+        redactAll: Boolean,
     ) {
         val fields = specs.associateBy(Iap2FieldSpec::id)
         parameters.asList().take(MAX_PARAMETERS).forEach { parameter ->
             val field = fields[parameter.id]
             val name = field?.name ?: "param"
-            val value = if (field == null) {
+            val sensitiveField = field?.let(::redactKnownValue) == true
+            val value = if (redactAll || sensitiveField) {
+                "<redacted ${parameter.payload.size}B>"
+            } else if (field == null) {
                 formatOpaque(parameter.payload)
             } else {
-                formatKnown(parameter.payload, field, depth)
+                formatKnown(parameter.payload, field, depth, redactAll)
             }
             lines += "${indent(depth)}[${parameter.id}] $name: $value"
         }
@@ -117,6 +125,7 @@ object Iap2FrameFormatter {
         payload: ByteArray,
         spec: Iap2FieldSpec,
         depth: Int,
+        redactAll: Boolean,
     ): String = try {
         when (spec.type) {
             Iap2WireType.VOID -> if (payload.isEmpty()) "void" else "void? ${hexPreview(payload)}"
@@ -136,7 +145,7 @@ object Iap2FrameFormatter {
             Iap2WireType.GROUP -> {
                 val nested = Iap2ParameterList.parse(payload)
                 val nestedLines = ArrayList<String>()
-                appendParameters(nested, spec.children, depth + 1, nestedLines)
+                appendParameters(nested, spec.children, depth + 1, nestedLines, redactAll)
                 if (nestedLines.isEmpty()) "{}" else nestedLines.joinToString("\n", prefix = "{\n", postfix = "\n${indent(depth)}}")
             }
             Iap2WireType.OPAQUE -> formatOpaque(payload)
@@ -147,13 +156,12 @@ object Iap2FrameFormatter {
 
     private fun formatOpaque(payload: ByteArray): String {
         if (payload.isEmpty()) return "void"
-        readableString(payload)?.let { return quote(truncate(it)) }
         return when (payload.size) {
             1 -> "u8=${u8(payload[0])} (0x${hexPreview(payload)})"
             2 -> "u16=${Iap2WireCodec.readU16(payload)} (0x${hexPreview(payload)})"
             4 -> "u32=${Iap2WireCodec.readU32(payload)} (0x${hexPreview(payload)})"
             8 -> "u64=${Iap2WireCodec.readU64(payload)} (0x${hexPreview(payload)})"
-            else -> bytes(payload)
+            else -> "bytes=${payload.size}"
         }
     }
 
@@ -169,21 +177,6 @@ object Iap2FrameFormatter {
 
     private fun bytes(payload: ByteArray): String =
         "bytes=${payload.size} [${hexPreview(payload)}]"
-
-    private fun readableString(payload: ByteArray): String? {
-        if (payload.isEmpty() || payload.last() != 0.toByte()) return null
-        val content = payload.copyOf(payload.size - 1)
-        if (content.any { byte ->
-                val value = byte.toInt() and 0xff
-                value < 0x20 && value != 0x09
-            }
-        ) {
-            return null
-        }
-        val decoded = content.decodeToString()
-        if (decoded.contains('\uFFFD')) return null
-        return decoded
-    }
 
     private fun quote(value: String): String =
         "\"" + value
@@ -207,5 +200,35 @@ object Iap2FrameFormatter {
 
     private fun u8(value: Byte): Int = value.toInt() and 0xff
 
+    private fun redactKnownValue(field: Iap2FieldSpec): Boolean =
+        field.name.lowercase() in SENSITIVE_FIELD_NAMES ||
+            field.type == Iap2WireType.STRING ||
+            field.type == Iap2WireType.STRING_LIST ||
+            field.type == Iap2WireType.BYTES
+
     private fun indent(depth: Int): String = "  ".repeat(depth)
+
+    private val SENSITIVE_FIELD_NAMES = setOf(
+        "passphrase",
+        "certificate",
+        "challenge",
+        "signatureresponse",
+        "privatekey",
+        "nmea",
+        "name",
+        "modelidentifier",
+        "serialnumber",
+        "bluetoothmac",
+        "ssid",
+        "devicename",
+        "deviceuuid",
+        "usbtransportidentifier",
+    )
+
+    /** Device-auth schemas are opaque in the catalog, so redact the complete message. */
+    private val SENSITIVE_MESSAGE_IDS = setOf(
+        0xaa01, 0xaa02, 0xaa03, 0xaa11, 0xaa12, 0xaa13,
+        // AppLinks metadata and icon messages contain private installed-app IDs and icon hashes.
+        0xad01, 0xad03, 0xad04,
+    )
 }

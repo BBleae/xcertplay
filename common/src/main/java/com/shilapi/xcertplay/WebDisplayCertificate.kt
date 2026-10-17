@@ -26,6 +26,7 @@ import javax.net.ssl.SSLContext
 internal object WebDisplayCertificate {
     private const val ALIAS = "web-display"
     private const val LOOPBACK = "127.0.0.1"
+    private const val LOOPBACK_DNS = "localhost"
     private const val MAX_ADDRESSES = 16
     private val PASSWORD = "xcertplay".toCharArray()
     /** Inside the 398 days browsers accept for a server certificate. */
@@ -48,7 +49,13 @@ internal object WebDisplayCertificate {
         }.getOrNull()?.takeIf { it.isKeyEntry(ALIAS) }
         val current = stored?.getCertificate(ALIAS) as? X509Certificate
         val covered = current?.subjectAlternativeNames.orEmpty().filter { it[0] == 7 }.map { it[1] as String }
-        if (stored != null && current != null && covered.containsAll(wanted) && current.notAfter.time - now > RENEW_MS) {
+        val dnsCovered = current?.subjectAlternativeNames.orEmpty()
+            .filter { it[0] == 2 }
+            .map { it[1] as String }
+        if (
+            stored != null && current != null && covered.containsAll(wanted) &&
+            LOOPBACK_DNS in dnsCovered && current.notAfter.time - now > RENEW_MS
+        ) {
             return stored
         }
         val store = create((covered + wanted).distinct().takeLast(MAX_ADDRESSES), now)
@@ -79,7 +86,14 @@ internal object WebDisplayCertificate {
                 extension("2.5.29.19", true, seq()),
                 extension("2.5.29.15", true, tlv(0x03, byteArrayOf(7, 0x80.toByte()))),
                 extension("2.5.29.37", false, seq(oid("1.3.6.1.5.5.7.3.1"))),
-                extension("2.5.29.17", false, seq(*addresses.map { tlv(0x87, InetAddress.getByName(it).address) }.toTypedArray())),
+                extension(
+                    "2.5.29.17",
+                    false,
+                    seq(
+                        tlv(0x82, LOOPBACK_DNS.toByteArray(Charsets.US_ASCII)),
+                        *addresses.map { tlv(0x87, InetAddress.getByName(it).address) }.toTypedArray(),
+                    ),
+                ),
             )),
         )
         val signature = Signature.getInstance("SHA256withECDSA").run { initSign(keys.private); update(tbs); sign() }

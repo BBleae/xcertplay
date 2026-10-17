@@ -7,6 +7,7 @@ import com.shilapi.xcertplay.iap2.catalog.Iap2Endpoints
 import com.shilapi.xcertplay.iap2.wire.Iap2Frame
 import com.shilapi.xcertplay.iap2.wire.Iap2ParameterList
 import com.shilapi.xcertplay.iap2.wire.Iap2ProtocolException
+import com.shilapi.xcertplay.mfi.MfiAuthenticationIdentity
 
 /** Reusable entry points for constructing and reading iAP2 CSM bodies. */
 object Iap2Messages {
@@ -50,6 +51,45 @@ data class Iap2ClusterAsset(
     }
 }
 
+/**
+ * Requests the phone's cluster-theme catalog for an opaque asset ID. The examined iOS 27
+ * asset-manager paths require a version object; an explicit version zero requests a catalog
+ * update rather than claiming that a matching asset is installed or verified. Exact iAP2
+ * acceptance still requires a real-phone capture.
+ * The exact MFi identity is checked again against the live authentication receipt at encoding.
+ */
+class Iap2ClusterAssetAcquisitionIntent(
+    val assetId: String,
+    val sdkVersion: String,
+    val expectedMfiAuthenticationIdentity: MfiAuthenticationIdentity,
+) {
+    init {
+        requireValidCatalogField(assetId, "ID")
+        requireValidCatalogField(sdkVersion, "SDK version")
+    }
+
+    companion object {
+        // Conservative local input budgets, not Apple-defined metadata limits. They leave
+        // substantial room below the iAP2 CSM u16 parameter and frame length ceilings.
+        const val MAX_FIELD_CHARACTERS = 256
+        const val MAX_FIELD_UTF8_BYTES = 256
+
+        internal fun requireValidCatalogField(value: String, label: String) {
+            require(
+                value.isNotBlank() &&
+                    value.length <= MAX_FIELD_CHARACTERS &&
+                    value.none { Character.isISOControl(it) },
+            ) {
+                "cluster asset acquisition $label must be non-blank, free of control characters and at most 256 characters"
+            }
+            val utf8 = value.toByteArray(Charsets.UTF_8)
+            require(utf8.size <= MAX_FIELD_UTF8_BYTES && String(utf8, Charsets.UTF_8) == value) {
+                "cluster asset acquisition $label must be valid UTF-8 text of at most 256 bytes"
+            }
+        }
+    }
+}
+
 /** Typed codec for the high-value CarPlay endpoints. */
 object Iap2CarPlayMessages {
     fun startSession(
@@ -63,10 +103,21 @@ object Iap2CarPlayMessages {
         sdkVersion: String? = null,
         clusterAsset: Iap2ClusterAsset? = null,
         mutualAuth: Boolean? = null,
+        clusterAssetAcquisitionIntent: Iap2ClusterAssetAcquisitionIntent? = null,
+        actualMfiAuthenticationIdentity: MfiAuthenticationIdentity? = null,
     ): Iap2Frame {
         require(airPlayPort in 1..0xffff) { "airPlayPort must be in 1..65535" }
         require(publicKey.isNotEmpty()) { "publicKey must not be empty" }
         require(sourceVersion.isNotEmpty()) { "sourceVersion must not be empty" }
+        require(clusterAsset == null || clusterAssetAcquisitionIntent == null) {
+            "preinstalled cluster asset and acquisition intent are mutually exclusive"
+        }
+        require(clusterAssetAcquisitionIntent == null || sdkVersion == null) {
+            "acquisition intent supplies its own SDK version"
+        }
+        val acquisition = clusterAssetAcquisitionIntent?.takeIf {
+            it.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity
+        }
 
         return Iap2Messages.build(Iap2Endpoints.CARPLAY_START_SESSION) {
             if (wiredIpv6Addresses.isNotEmpty() || wiredReserved != null) {
@@ -88,11 +139,17 @@ object Iap2CarPlayMessages {
             optionalString(3, deviceIdentifier)
             string(4, publicKey)
             string(5, sourceVersion)
-            optionalString(6, sdkVersion)
+            optionalString(6, acquisition?.sdkVersion ?: sdkVersion)
             clusterAsset?.let {
                 group(7) {
                     string(0, it.assetId)
                     u32(1, it.assetVersion)
+                }
+            }
+            acquisition?.let {
+                group(7) {
+                    string(0, it.assetId)
+                    u32(1, 0)
                 }
             }
             optionalU8(8, mutualAuth?.let { if (it) 1 else 0 })
@@ -122,10 +179,7 @@ object Iap2CarPlayMessages {
             )
         }
         val themeAssets = body.optionalGroup(2)?.let {
-            Iap2AvailabilityState(
-                available = decodeAvailability(it.optionalU8(0), "themeAssets"),
-                identifier = null,
-            )
+            Iap2ThemeAssetAvailability(it.optionalU8(0))
         }
         return Iap2CarPlayAvailability(wired, wireless, themeAssets)
     }
@@ -144,10 +198,24 @@ data class Iap2AvailabilityState(
     val identifier: String?,
 )
 
+/** Preserve the iAP2 byte: the phone's iAP2 sender receives a Ferrite feature mask, not proven Boolean. */
+data class Iap2ThemeAssetAvailability(val rawValue: Int?) {
+    init {
+        require(rawValue == null || rawValue in 0..0xff) { "theme asset availability must fit in u8" }
+    }
+
+    val available: Boolean?
+        get() = when (rawValue) {
+            0 -> false
+            1 -> true
+            else -> null
+        }
+}
+
 data class Iap2CarPlayAvailability(
     val wired: Iap2AvailabilityState?,
     val wireless: Iap2AvailabilityState?,
-    val themeAssets: Iap2AvailabilityState?,
+    val themeAssets: Iap2ThemeAssetAvailability?,
 )
 
 /** Typed codecs for Wi-Fi sharing and Wireless CarPlay notifications. */

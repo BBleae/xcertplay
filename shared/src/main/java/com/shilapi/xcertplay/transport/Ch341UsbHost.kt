@@ -31,13 +31,20 @@ class Ch341UsbHost(
 ) {
     private val appContext = context.applicationContext
     sealed class PermissionRequest {
-        data class AlreadyGranted(val device: UsbDevice) : PermissionRequest()
-        data class Requested(val device: UsbDevice) : PermissionRequest()
+        data class AlreadyGranted(val device: UsbDevice, val requestToken: Int) : PermissionRequest()
+        data class Requested(val device: UsbDevice, val requestToken: Int) : PermissionRequest()
     }
 
     sealed class PermissionResult {
-        data class Granted(val device: UsbDevice) : PermissionResult()
-        data class Denied(val device: UsbDevice) : PermissionResult()
+        abstract val requestToken: Int
+        data class Granted(
+            val device: UsbDevice,
+            override val requestToken: Int,
+        ) : PermissionResult()
+        data class Denied(
+            val device: UsbDevice,
+            override val requestToken: Int,
+        ) : PermissionResult()
     }
 
     sealed class OpenResult {
@@ -49,12 +56,14 @@ class Ch341UsbHost(
         usbManager.deviceList.values.filter { matcher.matches(it.vendorId, it.productId) }
 
     @Throws(I2cTransportException::class)
-    fun requestPermission(device: UsbDevice): PermissionRequest {
+    fun requestPermission(device: UsbDevice, requestToken: Int = 0): PermissionRequest {
         requireConfiguredDevice(device)
-        if (usbManager.hasPermission(device)) return PermissionRequest.AlreadyGranted(device)
+        if (usbManager.hasPermission(device)) {
+            return PermissionRequest.AlreadyGranted(device, requestToken)
+        }
 
-        usbManager.requestPermission(device, permissionPendingIntent())
-        return PermissionRequest.Requested(device)
+        usbManager.requestPermission(device, permissionPendingIntent(requestToken))
+        return PermissionRequest.Requested(device, requestToken)
     }
 
     /** Returns null for unrelated broadcasts, malformed results, or devices outside the matcher. */
@@ -62,10 +71,12 @@ class Ch341UsbHost(
         if (intent.action != permissionAction) return null
         val device = intent.usbDevice() ?: return null
         if (!matcher.matches(device.vendorId, device.productId)) return null
+        if (!intent.hasExtra(EXTRA_REQUEST_TOKEN)) return null
+        val requestToken = intent.getIntExtra(EXTRA_REQUEST_TOKEN, 0)
         return if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-            PermissionResult.Granted(device)
+            PermissionResult.Granted(device, requestToken)
         } else {
-            PermissionResult.Denied(device)
+            PermissionResult.Denied(device, requestToken)
         }
     }
 
@@ -119,11 +130,13 @@ class Ch341UsbHost(
         }
     }
 
-    private fun permissionPendingIntent(): PendingIntent {
-        val intent = Intent(permissionAction).setPackage(appContext.packageName)
+    private fun permissionPendingIntent(requestToken: Int): PendingIntent {
+        val intent = Intent(permissionAction)
+            .setPackage(appContext.packageName)
+            .putExtra(EXTRA_REQUEST_TOKEN, requestToken)
         return PendingIntent.getBroadcast(
             appContext,
-            0,
+            requestToken,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -159,6 +172,10 @@ class Ch341UsbHost(
         val input: UsbEndpoint,
         val output: UsbEndpoint,
     )
+
+    private companion object {
+        const val EXTRA_REQUEST_TOKEN = "com.shilapi.xcertplay.extra.CH341_PERMISSION_TOKEN"
+    }
 }
 
 /** Claimed CH341 USB resources. All transfer methods are blocking and must run off the main thread. */

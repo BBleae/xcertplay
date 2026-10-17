@@ -21,6 +21,8 @@ research/
 work/
 
 tools/
+__pycache__/
+*.pyc
 mobile/release/
 mobile/debug/
 

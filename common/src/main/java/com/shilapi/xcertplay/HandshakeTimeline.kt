@@ -935,7 +935,7 @@ class HandshakeTimeline(
             "CarPlayProtocolData" to "Vehicle state data (CAF)",
             "CarPlayProtocolData2" to "Vehicle state data (CAF, priority 1)",
             "CarPlayClusterControl" to "Cluster UI sync",
-            "CarPlayUpdateData" to "Theme asset transfer",
+            "CarPlayUpdateData" to "Update data (schema unconfirmed)",
             "CarPlayLoggingData" to "Log transfer",
         )
         private val COMMAND_MEANINGS = mapOf(

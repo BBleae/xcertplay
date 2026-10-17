@@ -17,6 +17,9 @@ const surface=$('surface'),canvas=$('canvas'),video=$('video'),statusText=$('sta
 const route=location.pathname.replace(/\/$/,''),key=new URLSearchParams(location.search).get('key')||'',main=route==='/main';
 $('title').textContent=main?'Main display':'Instrument display';
 const stream={active:false,width:0,height:0,control:false};
+// Custom cluster pages can read the latest snapshot and subscribe without taking over Apple's
+// type-111 video renderer. Unknown future message versions are intentionally ignored.
+window.carPlayClusterPresentation={version:1,revision:0,commands:[]};
 let socket=null,connection=0,retry=0,stopped=false,notice='',noticeUntil=0;
 
 // ---- connection --------------------------------------------------------------------------------
@@ -40,6 +43,16 @@ function receive(data){
     const message=JSON.parse(data);
     if(message.type==='state')setStream(message);
     else if(message.type==='busy')flash('Another browser is controlling CarPlay');
+    else if(!main&&message.type==='clusterPresentation'&&message.version===1&&
+      message.presentation&&Number.isSafeInteger(message.presentation.revision)&&Array.isArray(message.presentation.commands)){
+      const presentation={version:message.version,...message.presentation};
+      window.carPlayClusterPresentation=presentation;
+      window.dispatchEvent(new CustomEvent('carplay-cluster-presentation',{detail:presentation}));
+    }
+    else if(!main&&message.type==='clusterPresentationReset'&&message.version===1){
+      delete window.carPlayClusterPresentation;
+      window.dispatchEvent(new CustomEvent('carplay-cluster-presentation-reset'));
+    }
     return;
   }
   const bytes=new Uint8Array(data);

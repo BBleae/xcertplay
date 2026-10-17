@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.media
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioManager
@@ -13,6 +14,7 @@ import kotlin.math.pow
 
 internal const val MICROPHONE_CAPTURE_RATE_HZ = 16_000
 
+@SuppressLint("MissingPermission")
 internal fun openMicrophoneRecorder(requestedBufferBytes: Int): AudioRecord {
     val minBuffer = AudioRecord.getMinBufferSize(
         MICROPHONE_CAPTURE_RATE_HZ,

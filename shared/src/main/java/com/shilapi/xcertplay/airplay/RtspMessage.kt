@@ -37,39 +37,46 @@ object RtspMessage {
     /** Parses as many complete messages as are buffered, retaining any partial remainder. */
     fun parseMessages(buffer: ByteArray): Parsed {
         val messages = ArrayList<Request>()
-        var offset = 0
-        while (offset < buffer.size) {
-            val headerEndIndex = indexOf(buffer, headerEnd, offset) ?: break
-            val headerText = String(buffer, offset, headerEndIndex - offset, Charsets.US_ASCII)
-            val lines = headerText.split("\r\n")
-            if (lines.isEmpty()) {
-                offset = headerEndIndex + headerEnd.size
-                continue
+        try {
+            var offset = 0
+            while (offset < buffer.size) {
+                val headerEndIndex = indexOf(buffer, headerEnd, offset) ?: break
+                val headerText = String(buffer, offset, headerEndIndex - offset, Charsets.US_ASCII)
+                val lines = headerText.split("\r\n")
+                if (lines.isEmpty()) {
+                    offset = headerEndIndex + headerEnd.size
+                    continue
+                }
+                val requestLine = lines.first().split(" ", limit = 3)
+                val headers = HashMap<String, String>()
+                for (line in lines.drop(1)) {
+                    val separator = line.indexOf(':')
+                    if (separator == -1) continue
+                    headers[line.substring(0, separator).trim().lowercase()] =
+                        line.substring(separator + 1).trim()
+                }
+                val bodyStart = headerEndIndex + headerEnd.size
+                val contentLength = headers["content-length"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                if (contentLength > buffer.size - bodyStart) break
+                val bodyEnd = bodyStart + contentLength
+                messages.add(
+                    Request(
+                        method = requestLine[0],
+                        path = requestLine.getOrElse(1) { "" },
+                        protocol = requestLine.getOrElse(2) { "RTSP/1.0" },
+                        headers = headers,
+                        body = buffer.copyOfRange(bodyStart, bodyEnd),
+                    ),
+                )
+                offset = bodyEnd
             }
-            val requestLine = lines.first().split(" ", limit = 3)
-            val headers = HashMap<String, String>()
-            for (line in lines.drop(1)) {
-                val separator = line.indexOf(':')
-                if (separator == -1) continue
-                headers[line.substring(0, separator).trim().lowercase()] =
-                    line.substring(separator + 1).trim()
-            }
-            val bodyStart = headerEndIndex + headerEnd.size
-            val contentLength = headers["content-length"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
-            val bodyEnd = bodyStart + contentLength
-            if (bodyEnd > buffer.size) break
-            messages.add(
-                Request(
-                    method = requestLine[0],
-                    path = requestLine.getOrElse(1) { "" },
-                    protocol = requestLine.getOrElse(2) { "RTSP/1.0" },
-                    headers = headers,
-                    body = buffer.copyOfRange(bodyStart, bodyEnd),
-                ),
-            )
-            offset = bodyEnd
+            return Parsed(messages, buffer.copyOfRange(offset, buffer.size))
+        } catch (failure: Throwable) {
+            // The caller never receives a partial Parsed result. Dispose body copies already
+            // detached from the input, which may include an authenticated SETUP raw shk.
+            messages.forEach { it.body.fill(0) }
+            throw failure
         }
-        return Parsed(messages, buffer.copyOfRange(offset, buffer.size))
     }
 
     /** Builds a response, echoing the request protocol and CSeq. */

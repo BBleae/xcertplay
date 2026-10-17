@@ -1,6 +1,13 @@
 package com.shilapi.xcertplay.orchestration
 
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetAcquisitionIntent
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetCatalog
+import com.shilapi.xcertplay.iap2.message.Iap2ClusterAssetKey
+import com.shilapi.xcertplay.mfi.MfiAuthenticationIdentity
 import com.shilapi.xcertplay.transport.Iap2IdentificationConfig
+import com.shilapi.xcertplay.transport.Iap2WiredCarPlayEndpoint
+import com.shilapi.xcertplay.transport.Iap2WirelessCarPlayEndpoint
+import com.shilapi.xcertplay.transport.Iap2WirelessSecurity
 import com.shilapi.xcertplay.transport.UsbDeviceId
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -37,6 +44,25 @@ enum class ManualHotspotSecurity {
 }
 
 /**
+ * Deployment-owned selection metadata for one preinstalled cluster asset.
+ *
+ * This is not proof of authorization or an asset-transfer implementation. The endpoint's catalog
+ * eligibility gate still decides whether 0x4301 may advertise this exact ID/version pair.
+ */
+class CarPlayClusterAssetMetadataSelection(
+    val catalog: Iap2ClusterAssetCatalog,
+    val key: Iap2ClusterAssetKey,
+    val sdkVersion: String,
+    val expectedMfiAuthenticationIdentity: MfiAuthenticationIdentity,
+) {
+    init {
+        require(sdkVersion.isNotBlank() && '\u0000' !in sdkVersion) {
+            "cluster asset SDK version must be non-blank and must not contain U+0000"
+        }
+    }
+}
+
+/**
  * Deployment-owned constants for one head unit. There are deliberately no built-in Apple or
  * CH341 product IDs: the physical devices attached to the target must be identified first.
  */
@@ -64,8 +90,20 @@ class CarPlayRuntimeConfig(
     val manualHotspotChannel: Int = 0,
     val manualHotspotSecurity: ManualHotspotSecurity = ManualHotspotSecurity.WPA2,
     val locationReportingEnabled: Boolean = false,
+    val clusterAssetMetadataSelection: CarPlayClusterAssetMetadataSelection? = null,
+    val clusterAssetAcquisitionIntent: Iap2ClusterAssetAcquisitionIntent? = null,
+    val clusterAssetCatalogProbe: ClusterAssetCatalogProbe? = null,
 ) {
     init {
+        require(
+            listOfNotNull(
+                clusterAssetMetadataSelection,
+                clusterAssetAcquisitionIntent,
+                clusterAssetCatalogProbe,
+            ).size <= 1,
+        ) {
+            "preinstalled cluster asset selection, acquisition intent and catalog probe are mutually exclusive"
+        }
         require(iphoneDevices.all { it.vendorId == APPLE_VENDOR_ID }) {
             "iPhone USB identities must use Apple vendor ID 0x${APPLE_VENDOR_ID.toString(16)}"
         }
@@ -169,6 +207,69 @@ class CarPlayRuntimeConfig(
             }
         }
     }
+}
+
+/** The same pre-AA05 metadata selection is applied on either physical transport. */
+internal fun CarPlayRuntimeConfig.wiredCarPlayEndpoint(
+    ipv6Addresses: List<String>,
+    airPlayPort: Int,
+    publicKey: String,
+    sourceVersion: String,
+    deviceIdentifier: String?,
+    actualMfiAuthenticationIdentity: MfiAuthenticationIdentity,
+): Iap2WiredCarPlayEndpoint {
+    val selected = clusterAssetMetadataSelection?.takeIf {
+        it.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity
+    }
+    val acquisition = clusterAssetAcquisitionIntent?.takeIf {
+        it.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity
+    } ?: clusterAssetCatalogProbe?.acquisitionIntentOrNull(actualMfiAuthenticationIdentity)
+    return Iap2WiredCarPlayEndpoint(
+        ipv6Addresses = ipv6Addresses,
+        airPlayPort = airPlayPort,
+        publicKey = publicKey,
+        sourceVersion = sourceVersion,
+        deviceIdentifier = deviceIdentifier,
+        clusterAssetCatalog = selected?.catalog ?: Iap2ClusterAssetCatalog.EMPTY,
+        clusterAssetKey = selected?.key,
+        sdkVersion = selected?.sdkVersion,
+        clusterAssetAcquisitionIntent = acquisition,
+    )
+}
+
+internal fun CarPlayRuntimeConfig.wirelessCarPlayEndpoint(
+    ssid: String,
+    passphrase: String,
+    channel: Int,
+    security: Iap2WirelessSecurity,
+    ipAddresses: List<String>,
+    airPlayPort: Int,
+    deviceIdentifier: String,
+    publicKey: String,
+    sourceVersion: String,
+    actualMfiAuthenticationIdentity: MfiAuthenticationIdentity,
+): Iap2WirelessCarPlayEndpoint {
+    val selected = clusterAssetMetadataSelection?.takeIf {
+        it.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity
+    }
+    val acquisition = clusterAssetAcquisitionIntent?.takeIf {
+        it.expectedMfiAuthenticationIdentity == actualMfiAuthenticationIdentity
+    } ?: clusterAssetCatalogProbe?.acquisitionIntentOrNull(actualMfiAuthenticationIdentity)
+    return Iap2WirelessCarPlayEndpoint(
+        ssid = ssid,
+        passphrase = passphrase,
+        channel = channel,
+        security = security,
+        ipAddresses = ipAddresses,
+        airPlayPort = airPlayPort,
+        deviceIdentifier = deviceIdentifier,
+        publicKey = publicKey,
+        sourceVersion = sourceVersion,
+        clusterAssetCatalog = selected?.catalog ?: Iap2ClusterAssetCatalog.EMPTY,
+        clusterAssetKey = selected?.key,
+        sdkVersion = selected?.sdkVersion,
+        clusterAssetAcquisitionIntent = acquisition,
+    )
 }
 
 fun isManualHotspotChannelCompatible(band: ManualHotspotBand, channel: Int): Boolean = when (band) {

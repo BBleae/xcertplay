@@ -147,6 +147,7 @@ internal object CarPlayMediaSessionBridge {
     }
 }
 
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 class CarPlayMediaSessionService : MediaSessionService() {
     private lateinit var player: CarPlayRemotePlayer
     private lateinit var session: MediaSession
@@ -173,6 +174,7 @@ class CarPlayMediaSessionService : MediaSessionService() {
     }
 }
 
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 private class CarPlayRemotePlayer(
     looper: Looper,
     private val send: (Iap2MediaRemoteCommand) -> Boolean,

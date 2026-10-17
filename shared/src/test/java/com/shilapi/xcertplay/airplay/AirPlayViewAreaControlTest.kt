@@ -40,4 +40,64 @@ class AirPlayViewAreaControlTest {
         assertEquals(1, sent.size)
         assertEquals(0, (sent.single()["params"] as Map<*, *>)["viewAreaIndex"])
     }
+
+    @Test fun ordinaryCustomAlternateUiSurvivesInfoBeforeSetupAndResponseFencing() {
+        val sent = mutableListOf<Map<String, Any?>>()
+        val withCluster = config().copy(
+            cluster = AirPlayDisplayConfig(900, 300, initialUrl = "xcertplay://cluster/default"),
+        )
+        val control = AirPlayDisplayControlFactory.create(withCluster, { sent += it; true }, {})
+
+        val initialInfo = control.info(
+            mapOf(
+                "altScreenURLs" to listOf(
+                    "xcertplay://cluster/navigation",
+                    "xcertplay://cluster/media",
+                ),
+            ),
+        )
+        assertEquals(2, (initialInfo["displays"] as List<*>).size)
+        assertTrue(initialInfo.containsKey("uiContextNowOnDisplayURLs"))
+        assertFalse(initialInfo.containsKey("vehicleStateProtocolInfo"))
+
+        assertEquals(
+            listOf("uiContext", "viewAreas", "altScreen", "iAPChannel"),
+            control.negotiate(
+                listOf("uiContext", "viewAreas", "altScreen", "iAPChannel"),
+                eventPortAvailable = true,
+            ),
+        )
+        control.screenReady(111)
+        control.flush()
+        assertEquals("showUI", sent.single()["type"])
+        assertEquals(
+            "xcertplay://cluster/navigation",
+            (sent.single()["params"] as Map<*, *>)["url"],
+        )
+
+        control.responseStarted()
+        control.receive(
+            "changeUIContext",
+            mapOf(
+                "uuid" to AirPlayInfoPlist.ALT_UUID,
+                "url" to "xcertplay://cluster/media",
+            ),
+        )
+        control.flush()
+        assertEquals(1, sent.size)
+        control.responseSent()
+        assertEquals(2, sent.size)
+        assertEquals("showUI", sent.last()["type"])
+        assertEquals(
+            "xcertplay://cluster/media",
+            (sent.last()["params"] as Map<*, *>)["url"],
+        )
+
+        val repeatedInfo = control.info(emptyMap())
+        assertEquals(2, (repeatedInfo["displays"] as List<*>).size)
+        assertEquals(
+            listOf("xcertplay://cluster/navigation"),
+            repeatedInfo["uiContextLastOnDisplayURLs"],
+        )
+    }
 }

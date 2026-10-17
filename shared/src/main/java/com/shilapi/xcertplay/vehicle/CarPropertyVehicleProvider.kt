@@ -2,6 +2,7 @@ package com.shilapi.xcertplay.vehicle
 
 import com.shilapi.xcertplay.transport.VehicleStatusProvider
 import com.shilapi.xcertplay.transport.VehicleStatusSnapshot
+import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -10,6 +11,7 @@ class CarPropertyVehicleProvider(
     private val store: CarPropertyDataStore,
     private val config: VehicleDataConfig,
     private val now: () -> Long,
+    private val workerCloseTimeoutMillis: Long = 2_000L,
 ) : VehicleStatusProvider, com.shilapi.xcertplay.transport.VehicleSpeedSource {
     private val sampleReady = Object()
     private val worker = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -18,6 +20,8 @@ class CarPropertyVehicleProvider(
     @Volatile private var closed = false
     @Volatile private var started = false
     @Volatile private var speedRequested = false
+    private val videoParkObservers = LinkedHashMap<Any, (VideoParkSensorSnapshot?) -> Unit>()
+    @Volatile private var videoParkRequested = false
     @Volatile private var statusPreflightUntilNanos = 0L
     @Volatile var subscriptionActive = false
         private set
@@ -41,6 +45,15 @@ class CarPropertyVehicleProvider(
         worker.scheduleWithFixedDelay({
             if (!closed) {
                 if (ticks++ % 5 == 0 && (subscriptionActive || System.nanoTime() < statusPreflightUntilNanos)) store.refresh(ids)
+                if (videoParkRequested) {
+                    val evidence = store.sampleVideoParkEvidence()
+                    val observers = synchronized(videoParkObservers) { videoParkObservers.values.toList() }
+                    observers.forEach { observer ->
+                        try { observer(evidence) } catch (error: Exception) {
+                            if (error is InterruptedException) Thread.currentThread().interrupt()
+                        }
+                    }
+                }
                 if (speedRequested) store.refresh(listOf(VehicleTelemetrySnapshot.STANDARD_SPEED,
                     VehicleTelemetrySnapshot.STANDARD_GEAR))
                 synchronized(sampleReady) { sampleReady.notifyAll() }
@@ -65,6 +78,27 @@ class CarPropertyVehicleProvider(
     override fun requestSpeed(enabled: Boolean) {
         speedRequested = enabled && config.isEnabled(VehicleDataFeature.WHEEL_SPEED) && !closed
     }
+
+    /** Separate 200-ms safety demand; it never depends on an iAP2 subscription or speedRequested. */
+    internal fun observeVideoParkEvidence(observer: (VideoParkSensorSnapshot?) -> Unit): AutoCloseable {
+        val key = Any()
+        synchronized(videoParkObservers) {
+            if (closed || !started) return AutoCloseable { }
+            if (videoParkObservers.isEmpty()) store.invalidateVideoParkEvidence()
+            videoParkObservers[key] = observer
+            videoParkRequested = true
+        }
+        return AutoCloseable {
+            synchronized(videoParkObservers) {
+                videoParkObservers.remove(key)
+                videoParkRequested = videoParkObservers.isNotEmpty()
+                if (!videoParkRequested) store.invalidateVideoParkEvidence()
+            }
+        }
+    }
+
+    internal fun latestVideoParkEvidence(): VideoParkSensorSnapshot? =
+        if (closed || !started || !videoParkRequested) null else store.latestVideoParkEvidence()
     override fun latestSpeed(): com.shilapi.xcertplay.transport.VehicleSpeedReading? {
         if (closed || !config.isEnabled(VehicleDataFeature.WHEEL_SPEED)) return null
         val values = store.snapshot()
@@ -99,12 +133,49 @@ class CarPropertyVehicleProvider(
             else VehicleStatusSnapshot(percent, range, outsideTemperatureCelsius = temperature)
     }
     @Synchronized override fun close() {
-        if (closed) return
         closed = true
         subscriptionActive = false
         statusPreflightUntilNanos = 0
+        val parkObservers = synchronized(videoParkObservers) {
+            videoParkRequested = false
+            videoParkObservers.values.toList().also { videoParkObservers.clear() }
+        }
+        store.invalidateVideoParkEvidence()
+        parkObservers.forEach { observer ->
+            try { observer(null) } catch (error: Exception) {
+                if (error is InterruptedException) Thread.currentThread().interrupt()
+            }
+        }
         synchronized(sampleReady) { sampleReady.notifyAll() }
         worker.shutdownNow()
-        store.close()
+        var failure: Exception? = null
+        try {
+            store.close()
+        } catch (error: Exception) {
+            failure = error
+        }
+        val terminated = try {
+            worker.awaitTermination(workerCloseTimeoutMillis, TimeUnit.MILLISECONDS)
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            failure = combineProviderCloseFailure(
+                failure,
+                IOException("Interrupted while retiring the vehicle-data worker", error),
+            )
+            false
+        }
+        if (!terminated) {
+            failure = combineProviderCloseFailure(
+                failure,
+                IOException("Vehicle-data worker did not stop before the deadline"),
+            )
+        }
+        failure?.let { throw it }
+    }
+
+    private fun combineProviderCloseFailure(first: Exception?, next: Exception): Exception {
+        if (first == null) return next
+        if (first !== next && first.suppressed.size < 8) first.addSuppressed(next)
+        return first
     }
 }
