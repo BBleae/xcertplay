@@ -15,12 +15,10 @@ data class MicrophoneConfig(
     val key: ByteArray,
     val codec: AudioCodecKind = AudioCodecKind.LPCM,
     val bitrate: Int? = null,
+    val framesPerPacket: Int? = null,
 ) {
     val samplesPerPacket: Int
-        get() = maxOf(1, sampleRate * frameMillis / 1000)
-
-    val rtpSamplesPerPacket: Int
-        get() = if (codec == AudioCodecKind.OPUS) 48_000 * frameMillis / 1000 else samplesPerPacket
+        get() = framesPerPacket?.takeIf { it > 0 } ?: maxOf(1, sampleRate * frameMillis / 1000)
 
     val frameBytes: Int
         get() = samplesPerPacket * channels * 2

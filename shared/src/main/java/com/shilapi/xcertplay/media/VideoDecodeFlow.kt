@@ -7,21 +7,23 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 /** Apply TCP backpressure to compressed pictures, never discard a reference on queue overflow. */
-internal class VideoWorkQueue<T>(capacity: Int) : Closeable {
+internal class VideoWorkQueue<T>(capacity: Int, private val onDiscard: (T) -> Unit = {}) : Closeable {
     private data class Entry<T>(val value: T, val frame: Boolean)
     private val entries = LinkedBlockingQueue<Entry<T>>()
     private val slots = Semaphore(capacity)
     @Volatile private var closed = false
     val size: Int get() = entries.size
 
-    fun frame(value: T) {
+    fun frame(value: T): Boolean {
         while (!closed) {
             if (!slots.tryAcquire(50, TimeUnit.MILLISECONDS)) continue
-            synchronized(this) {
-                if (closed) slots.release() else entries.offer(Entry(value, true))
+            val enqueued = synchronized(this) {
+                if (closed) { slots.release(); false }
+                else { entries.offer(Entry(value, true)); true }
             }
-            return
+            return enqueued
         }
+        return false
     }
 
     @Synchronized
@@ -41,6 +43,7 @@ internal class VideoWorkQueue<T>(capacity: Int) : Closeable {
         while (true) {
             val entry = entries.poll() ?: break
             if (entry.frame) slots.release()
+            onDiscard(entry.value)
         }
     }
 }
@@ -49,21 +52,37 @@ internal class VideoWorkQueue<T>(capacity: Int) : Closeable {
 internal class VideoDecodePump(private val port: Port) {
     interface Port {
         fun drain()
-        fun queue(bytes: ByteArray, presentationTimeUs: Long): Boolean
+        fun queue(bytes: ByteArray, size: Int, presentationTimeUs: Long): Boolean
     }
-    private data class Input(val bytes: ByteArray, val ptsUs: Long)
+    private data class Input(
+        val bytes: ByteArray,
+        val size: Int,
+        val ptsUs: Long,
+        val release: () -> Unit,
+    )
     private var pending: Input? = null
     val hasPending: Boolean get() = pending != null
 
-    fun submit(bytes: ByteArray, presentationTimeUs: Long) {
+    fun submit(bytes: ByteArray, size: Int, presentationTimeUs: Long, release: () -> Unit = {}) {
         check(pending == null)
-        pending = Input(bytes, presentationTimeUs)
+        require(size in 0..bytes.size)
+        pending = Input(bytes, size, presentationTimeUs, release)
     }
 
     fun tick() {
         port.drain()
-        pending?.let { if (port.queue(it.bytes, it.ptsUs)) pending = null }
+        pending?.let {
+            if (port.queue(it.bytes, it.size, it.ptsUs)) {
+                pending = null
+                it.release()
+            }
+        }
         port.drain()
+    }
+
+    fun clear() {
+        pending?.release()
+        pending = null
     }
 }
 
@@ -73,10 +92,11 @@ class VideoSyncGate(private val codec: VideoCodec) {
     private var skipRasl = false
     val waitingForRandomAccess: Boolean get() = waiting
 
-    fun accept(annexB: ByteArray): Boolean {
-        val units = MediaCodecSupport.annexBNalUnits(annexB)
-        require(units.isNotEmpty()) { "Empty or malformed video access unit" }
-        return acceptTypes(nalUnitTypes(codec, units))
+    fun accept(annexB: ByteArray, length: Int = annexB.size): Boolean {
+        // Only the NAL headers decide; copying every unit would duplicate the whole picture.
+        val headers = MediaCodecSupport.annexBNalHeaders(annexB, length)
+        require(headers.isNotEmpty()) { "Empty or malformed video access unit" }
+        return acceptTypes(nalUnitTypes(codec, headers))
     }
 
     /** Same decision as [accept], for callers that already parsed the NAL unit types. */

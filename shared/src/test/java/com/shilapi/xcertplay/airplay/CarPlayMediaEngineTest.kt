@@ -19,6 +19,15 @@ class CarPlayMediaEngineTest {
     }
 
     @Test
+    fun keyFrameCommandsAddressScreensByDisplayUuid() {
+        assertEquals(mapOf("type" to "forceKeyFrame", "params" to emptyMap<String, Any?>()), mainScreenKeyFrameCommand())
+        assertEquals(
+            mapOf("type" to "forceKeyFrame", "params" to mapOf("uuid" to AirPlayInfoPlist.ALT_UUID)),
+            screenKeyFrameCommand(AirPlayInfoPlist.ALT_UUID),
+        )
+    }
+
+    @Test
     fun screenStreamTeardownReportsInactive() {
         val events = mutableListOf<Pair<Int, Boolean>>()
         val clearedRecovery = mutableListOf<Int>()

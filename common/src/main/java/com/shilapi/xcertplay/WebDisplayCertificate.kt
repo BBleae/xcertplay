@@ -3,13 +3,16 @@ package com.shilapi.xcertplay
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
+import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.PrivateKey
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.PKCS8EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -22,6 +25,10 @@ import javax.net.ssl.SSLContext
  * The web displays' self-signed TLS identity. Browsers only expose WebCodecs to secure contexts, so
  * HTTPS lets them use the faster, lower-latency decoder; each browser accepts the certificate once.
  * It is kept in app storage and only renewed near expiry or when it misses a display address.
+ *
+ * Stored as plain DER next to [file] rather than in the PKCS12 file itself: that file's fixed
+ * password protects nothing, yet each load paid ~2s of PBKDF on the UI thread before CarPlay started.
+ * The PKCS12 file is still read when no DER file exists, so a certificate browsers already accepted survives.
  */
 internal object WebDisplayCertificate {
     private const val ALIAS = "web-display"
@@ -43,23 +50,51 @@ internal object WebDisplayCertificate {
     /** The stored identity when it still covers [addresses]; otherwise a new one that also covers the old ones. */
     fun identity(file: File, addresses: List<String>, now: Long): KeyStore {
         val wanted = (addresses + LOOPBACK).distinct()
-        val stored = runCatching {
+        val der = File(file.parentFile, file.nameWithoutExtension + ".der")
+        val saved = runCatching { readDer(der) }.getOrNull()
+        val stored = saved ?: runCatching {
             KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, PASSWORD) } }
         }.getOrNull()?.takeIf { it.isKeyEntry(ALIAS) }
         val current = stored?.getCertificate(ALIAS) as? X509Certificate
         val covered = current?.subjectAlternativeNames.orEmpty().filter { it[0] == 7 }.map { it[1] as String }
         if (stored != null && current != null && covered.containsAll(wanted) && current.notAfter.time - now > RENEW_MS) {
+            if (saved == null) writeDer(der, stored)
             return stored
         }
         val store = create((covered + wanted).distinct().takeLast(MAX_ADDRESSES), now)
-        runCatching {
-            file.parentFile?.mkdirs()
-            val temporary = File(file.path + ".tmp")
-            temporary.outputStream().use { store.store(it, PASSWORD) }
-            check(temporary.renameTo(file))
-        }
+        writeDer(der, store)
         return store
     }
+
+    /** Certificate length (2 bytes), certificate DER, then the PKCS#8 private key. */
+    private fun readDer(file: File): KeyStore {
+        val bytes = file.readBytes()
+        val length = (bytes[0].toInt() and 0xff shl 8) or (bytes[1].toInt() and 0xff)
+        val certificate = CertificateFactory.getInstance("X.509")
+            .generateCertificate(bytes.inputStream(2, length)) as X509Certificate
+        val key = KeyFactory.getInstance("EC")
+            .generatePrivate(PKCS8EncodedKeySpec(bytes.copyOfRange(2 + length, bytes.size)))
+        return keyStore(key, certificate)
+    }
+
+    private fun writeDer(file: File, store: KeyStore): Boolean = runCatching {
+        val certificate = certificate(store).encoded
+        val key = (store.getKey(ALIAS, PASSWORD) as PrivateKey).encoded
+        file.parentFile?.mkdirs()
+        val temporary = File(file.path + ".tmp")
+        temporary.outputStream().use {
+            it.write(byteArrayOf((certificate.size ushr 8).toByte(), certificate.size.toByte()))
+            it.write(certificate)
+            it.write(key)
+        }
+        check(temporary.renameTo(file))
+    }.isSuccess
+
+    private fun keyStore(key: PrivateKey, certificate: X509Certificate): KeyStore =
+        KeyStore.getInstance("PKCS12").apply {
+            load(null, null)
+            setKeyEntry(ALIAS, key, PASSWORD, arrayOf(certificate))
+        }
 
     private fun create(addresses: List<String>, now: Long): KeyStore {
         val keys = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
@@ -84,11 +119,8 @@ internal object WebDisplayCertificate {
         )
         val signature = Signature.getInstance("SHA256withECDSA").run { initSign(keys.private); update(tbs); sign() }
         val der = seq(tbs, ecdsaSha256, tlv(0x03, byteArrayOf(0) + signature))
-        val certificate = CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream())
-        return KeyStore.getInstance("PKCS12").apply {
-            load(null, null)
-            setKeyEntry(ALIAS, keys.private, PASSWORD, arrayOf(certificate))
-        }
+        val certificate = CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream()) as X509Certificate
+        return keyStore(keys.private, certificate)
     }
 
     private fun extension(id: String, critical: Boolean, value: ByteArray): ByteArray =

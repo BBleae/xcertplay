@@ -163,7 +163,8 @@ class CarPlayController(
     private enum class Phase { IDLE, MFI, WIRELESS, IPHONE, REENUMERATION, DATAPATHS, CONTROL }
 
     private val appContext = context.applicationContext
-    private val usbManager = context.getSystemService(UsbManager::class.java)
+    // A service fetched from an Activity holds it; the controller outlives the Activity.
+    private val usbManager = appContext.getSystemService(UsbManager::class.java)
     private val bluetoothAdapter =
         appContext.getSystemService(BluetoothManager::class.java)?.adapter
     private val iphoneHost = IphoneUsbHost(

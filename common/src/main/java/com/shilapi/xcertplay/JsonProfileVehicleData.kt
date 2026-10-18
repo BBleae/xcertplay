@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
 import com.shilapi.xcertplay.transport.VehicleSpeedSource
@@ -32,12 +33,19 @@ internal class JsonProfileVehicleDataEntry(private val profile: () -> VehiclePro
         val engine = VehicleProfileEngine(
             AndroidCarPropertyBackend(request.context), profile(), request.config,
             SystemClock::elapsedRealtime, Build.VERSION.SDK_INT,
-            { name -> runCatching { packages.getPackageInfo(name, 0); true }.getOrDefault(false) },
+            packageInstalled(packages),
             request.diagnostic,
         )
         return JsonProfileVehicleDataSource(engine, SystemClock::elapsedRealtime)
     }
 }
+
+/**
+ * Top level on purpose: inside the entry, `runCatching {}` binds to the entry as receiver, and the
+ * long-lived engine would then hold the entry's profile lambda and, through it, the Activity.
+ */
+private fun packageInstalled(packages: PackageManager): (String) -> Boolean =
+    { name -> runCatching { packages.getPackageInfo(name, 0); true }.getOrDefault(false) }
 
 /** The profile engine as a [VehicleDataSource]; only start and diagnostics are its own. */
 internal class JsonProfileVehicleDataSource(

@@ -2,6 +2,7 @@ package com.shilapi.xcertplay.media
 
 import android.content.Context
 import android.media.AudioRecord
+import android.os.Process
 import android.util.Log
 import com.shilapi.xcertplay.airplay.AudioCodecKind
 import com.shilapi.xcertplay.airplay.MicrophoneConfig
@@ -15,12 +16,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Captures 16 kHz mono PCM from Android and sends it in the format negotiated by CarPlay.
- *
- * Wired sessions use PCM; wireless sessions use Opus. Both share the same recorder and socket
- * setup so the device-specific audio mode and address-family requirements stay consistent.
- */
+/** 采集 16 kHz 单声道 PCM，按协商格式发送 LPCM、Opus 或 AAC-ELD。 */
 internal class MicrophoneUplink(
     private val context: Context,
     private val config: MicrophoneConfig,
@@ -33,7 +29,15 @@ internal class MicrophoneUplink(
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var opusEncoder: OpusEncoder? = null
+    @Volatile private var eldEncoder: AacEldEncoder? = null
     private var thread: Thread? = null
+
+    /** 实际采集速率：优先直接按协商速率打开，由系统做重采样；打不开才回退 16 kHz 并自行变换。 */
+    private var captureRate = config.sampleRate
+
+    /** 一帧输出对应的采集字节数；每次 read 恰好取一帧，包的间隔就是帧长。 */
+    private val captureFrameBytes: Int
+        get() = (captureRate.toLong() * config.samplesPerPacket / config.sampleRate).toInt() * BYTES_PER_SAMPLE
 
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
@@ -58,9 +62,19 @@ internal class MicrophoneUplink(
             )
         }
 
-        val captureFrameBytes =
-            MICROPHONE_CAPTURE_RATE_HZ * config.frameMillis / 1000 * BYTES_PER_SAMPLE
-        val nextRecorder = openMicrophoneRecorder(captureFrameBytes * 4)
+        if (config.codec == AudioCodecKind.AAC_ELD) {
+            require(config.channels == 1)
+            eldEncoder = AacEldEncoder.create(config.sampleRate, config.samplesPerPacket, config.bitrate ?: 48_000)
+        }
+
+        val nextRecorder = try {
+            openMicrophoneRecorder(captureRate, captureFrameBytes * 4)
+        } catch (error: Exception) {
+            if (captureRate == MICROPHONE_CAPTURE_RATE_HZ) throw error
+            Log.w(TAG, "microphone cannot capture at ${captureRate} Hz, falling back to $MICROPHONE_CAPTURE_RATE_HZ Hz", error)
+            captureRate = MICROPHONE_CAPTURE_RATE_HZ
+            openMicrophoneRecorder(captureRate, captureFrameBytes * 4)
+        }
         recorder = nextRecorder
 
         val nextSocket = DatagramSocket(null).apply {
@@ -77,19 +91,20 @@ internal class MicrophoneUplink(
         Log.i(
             TAG,
             "microphone uplink started type=${config.audioType} codec=${config.codec} " +
-                "captureRate=$MICROPHONE_CAPTURE_RATE_HZ outputRate=${config.sampleRate} " +
+                "captureRate=$captureRate outputRate=${config.sampleRate} " +
                 "channels=${config.channels} gain=${microphoneGainPercent}% " +
                 "frameMs=${config.frameMillis} port=${config.port}",
         )
     }
 
     private fun capture(activeRecorder: AudioRecord, activeSocket: DatagramSocket) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val frame = ByteArray(config.samplesPerPacket * BYTES_PER_SAMPLE)
-        val readBuffer = ByteArray(maxOf(CAPTURE_READ_BYTES, frame.size))
-        val resampler = if (config.sampleRate == MICROPHONE_CAPTURE_RATE_HZ) {
+        val readBuffer = ByteArray(captureFrameBytes)
+        val resampler = if (config.sampleRate == captureRate) {
             null
         } else {
-            PcmMonoResampler(MICROPHONE_CAPTURE_RATE_HZ, config.sampleRate)
+            PcmMonoResampler(captureRate, config.sampleRate)
         }
         val counters = MicrophoneCounters()
         var filled = 0
@@ -140,10 +155,11 @@ internal class MicrophoneUplink(
         counters: MicrophoneCounters,
         monoFrame: ByteArray,
     ) {
-        val bodies = if (config.codec == AudioCodecKind.OPUS) {
-            opusEncoder?.encode(monoFrame).orEmpty()
-        } else {
-            listOf(MicrophonePacketizer.toWirePcm(expandMonoPcm(monoFrame, config.channels)))
+        val bodies = when (config.codec) {
+            AudioCodecKind.OPUS -> opusEncoder?.encode(monoFrame).orEmpty()
+            AudioCodecKind.AAC_ELD -> eldEncoder?.encode(monoFrame).orEmpty()
+            AudioCodecKind.LPCM -> listOf(MicrophonePacketizer.toWirePcm(expandMonoPcm(monoFrame, config.channels)))
+            AudioCodecKind.AAC_LC -> error("AAC-LC microphone input is unsupported")
         }
         bodies.forEach { body ->
             val packet = MicrophonePacketizer.sealPacket(
@@ -151,7 +167,7 @@ internal class MicrophoneUplink(
                 payloadType = config.payloadType,
                 counters = counters,
                 body = body,
-                samples = config.rtpSamplesPerPacket,
+                samples = config.samplesPerPacket,
             )
             try {
                 activeSocket.send(DatagramPacket(packet, packet.size, config.host, config.port))
@@ -223,6 +239,14 @@ internal class MicrophoneUplink(
             // Best effort.
         }
 
+        val currentEldEncoder = eldEncoder
+        eldEncoder = null
+        try {
+            currentEldEncoder?.close()
+        } catch (_: Exception) {
+            // 关闭失败也必须继续释放音频模式。
+        }
+
         val currentAudioModeLease = audioModeLease
         audioModeLease = null
         try {
@@ -235,7 +259,6 @@ internal class MicrophoneUplink(
     private companion object {
         const val TAG = "xcertplay-usb"
         const val BYTES_PER_SAMPLE = 2
-        const val CAPTURE_READ_BYTES = 2_048
         const val CLOSE_JOIN_MILLIS = 500L
     }
 }

@@ -21,6 +21,7 @@ import com.shilapi.xcertplay.airplay.AudioCodecKind
 import com.shilapi.xcertplay.airplay.AudioFormat
 import com.shilapi.xcertplay.airplay.MediaSink
 import com.shilapi.xcertplay.airplay.MicrophoneConfig
+import com.shilapi.xcertplay.airplay.VideoAccessUnit
 import com.shilapi.xcertplay.airplay.VideoCodec
 import com.shilapi.xcertplay.airplay.toHexString
 import java.io.Closeable
@@ -29,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Android rendering backend for the CarPlay media engine. Video frames are
@@ -78,7 +80,7 @@ class AndroidMediaSink(
         synchronized(previewLock) {
             val decoder = videoDecoders[type]
             if (decoder != null) decoder.setSurface(surface)
-            else videoConfigs[type]?.let { (codec, data) -> videoDecoder(type).configure(codec, data) }
+            else videoConfigs[type]?.let { (codec, data) -> videoDecoder(type, midStream = true).configure(codec, data) }
         }
     }
 
@@ -128,18 +130,21 @@ class AndroidMediaSink(
         }
     }
 
-    override fun onVideoFrame(type: Int, naluBytes: ByteArray) {
+    override fun onVideoFrame(type: Int, accessUnit: VideoAccessUnit) {
         val arrivalNs = System.nanoTime()
         val arrivalUs = arrivalNs / 1_000L
         if (type == STREAM_TYPE_MAIN_SCREEN) mediaMetricsMonitor?.recordVideoFrameReceived(arrivalNs)
         if (!forwarded(type)) {
-            videoDecoder(type).submit(naluBytes, arrivalUs)
+            videoDecoder(type).submit(accessUnit, arrivalUs)
             return
         }
-        val accessUnit = MediaCodecSupport.toLengthPrefixed(naluBytes)
-        if (accessUnit.isNotEmpty()) mediaTap?.onVideoFrame(type, accessUnit, arrivalUs)
+        if (mediaTap?.wantsVideoFrames(type) == true) {
+            val forwardedUnit = MediaCodecSupport.toLengthPrefixed(accessUnit.bytes.copyOf(accessUnit.size))
+            if (forwardedUnit.isNotEmpty()) mediaTap.onVideoFrame(type, forwardedUnit, arrivalUs)
+        }
         // Only a preview decoder created with a Surface may take frames; it never holds them.
-        videoDecoders[type]?.submit(naluBytes, arrivalUs)
+        val decoder = videoDecoders[type]
+        if (decoder != null) decoder.submit(accessUnit, arrivalUs) else accessUnit.close()
     }
 
     override fun onScreenStreamActive(type: Int, active: Boolean) {
@@ -194,7 +199,7 @@ class AndroidMediaSink(
         onClosed()
     }
 
-    private fun videoDecoder(type: Int): VideoDecoder =
+    private fun videoDecoder(type: Int, midStream: Boolean = false): VideoDecoder =
         videoDecoders.computeIfAbsent(type) {
             VideoDecoder(
                 surfaces[type] ?: defaultSurface,
@@ -203,6 +208,7 @@ class AndroidMediaSink(
                 preferSoftwareHevcDecoder,
                 mediaMetricsMonitor,
                 requestKeyFrame = { videoRecoveryHandlers[type]?.invoke() ?: false },
+                midStream = midStream,
             )
         }
 
@@ -312,7 +318,9 @@ class AndroidMediaSink(
 
 private sealed interface VideoJob {
     data class Config(val codec: VideoCodec, val codecData: ByteArray) : VideoJob
-    data class Frame(val nalus: ByteArray, val receivedUs: Long) : VideoJob
+    data class Frame(val accessUnit: VideoAccessUnit, val receivedUs: Long) : VideoJob
+    /** Wakes an idle worker to notice a Surface change. */
+    data object Wake : VideoJob
 }
 
 /** Serial MediaCodec video decoder: one worker owns configure and frame feeding. */
@@ -323,13 +331,20 @@ private class VideoDecoder(
     private val preferSoftwareHevcDecoder: Boolean,
     mediaMetricsMonitor: MediaMetricsMonitor?,
     private val requestKeyFrame: () -> Boolean,
+    /** Joining a running stream: the next random access picture may be a GOP away, or never on a static screen. */
+    midStream: Boolean = false,
 ) : Closeable {
-    private val queue = VideoWorkQueue<VideoJob>(8)
+    private val queue = VideoWorkQueue<VideoJob>(8) { job ->
+        if (job is VideoJob.Frame) job.accessUnit.close()
+    }
     @Volatile private var running = true
     @Volatile private var decoder: MediaCodec? = null
     private var pump: VideoDecodePump? = null
     private var syncGate: VideoSyncGate? = null
     private var pendingSinceNs = 0L
+    /** Pictures queued to the codec and not yet released; the worker waits on output only for these. */
+    private var inFlight = 0
+    private var lastQueuedNs = 0L
     private var lastPtsUs = 0L
     private var statsStartNs = System.nanoTime()
     private var inputCount = 0
@@ -337,13 +352,14 @@ private class VideoDecoder(
     private var inputRetries = 0
     private var syncSkips = 0
     private var maxOutputAgeUs = 0L
-    private var needsKeyFrame = false
+    private var needsKeyFrame = midStream
     private var lastKeyFrameRequestNs = 0L
     @Volatile private var requestedSurface: Surface? = surface
     @Volatile private var detached: CountDownLatch? = null
     private var outputSurface: Surface? = surface
     private var heldFrame: VideoJob.Frame? = null
     private var lastConfig: VideoJob.Config? = null
+    private val drainInfo = MediaCodec.BufferInfo()
     private var renderedFrameLogged = false
     private var submittedFrameLogged = false
     private var duplicateConfigLogged = false
@@ -355,8 +371,8 @@ private class VideoDecoder(
         queue.control(VideoJob.Config(codec, codecData.copyOf()))
     }
 
-    fun submit(nalus: ByteArray, arrivalUs: Long) {
-        queue.frame(VideoJob.Frame(nalus, arrivalUs))
+    fun submit(accessUnit: VideoAccessUnit, arrivalUs: Long) {
+        if (!queue.frame(VideoJob.Frame(accessUnit, arrivalUs))) accessUnit.close()
     }
 
     /**
@@ -367,11 +383,13 @@ private class VideoDecoder(
     fun setSurface(surface: Surface?) {
         if (surface != null || Thread.currentThread() === thread || !thread.isAlive) {
             requestedSurface = surface
+            wake()
             return
         }
         val latch = CountDownLatch(1)
         detached = latch
         requestedSurface = null
+        wake()
         if (!latch.await(SURFACE_DETACH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             Log.w(TAG, "video decoder did not detach from surface within ${SURFACE_DETACH_TIMEOUT_MS}ms")
         }
@@ -385,6 +403,12 @@ private class VideoDecoder(
         running = false
         queue.close()
         thread.interrupt()
+    }
+
+    /** The worker blocks instead of polling, so a Surface change must interrupt its wait. */
+    private fun wake() {
+        queue.control(VideoJob.Wake)
+        LockSupport.unpark(thread)
     }
 
     private fun run() {
@@ -412,17 +436,18 @@ private class VideoDecoder(
                         continue
                     }
                     if (heldFrame != null && outputSurface == null) {
-                        Thread.sleep(5)
+                        // setSurface unparks; the timeout only bounds a missed wake.
+                        LockSupport.parkNanos(IDLE_WAIT_NS)
                         continue
                     }
-                    when (val job = heldFrame ?: queue.poll(5)) {
+                    when (val job = heldFrame ?: nextJob()) {
                         is VideoJob.Config -> configureDecoder(job)
                         is VideoJob.Frame -> {
                             // Preserve the initial random access picture until a Surface exists.
                             heldFrame = if (outputSurface == null) job else null
                             if (outputSurface != null) feed(job)
                         }
-                        null -> Unit
+                        VideoJob.Wake, null -> Unit
                     }
                 } catch (error: InterruptedException) {
                     throw error
@@ -435,10 +460,29 @@ private class VideoDecoder(
         } catch (_: InterruptedException) {
             // Worker shut down.
         } finally {
+            heldFrame?.accessUnit?.close()
             heldFrame = null
             releaseDecoder()
             detached?.countDown()
         }
+    }
+
+    /**
+     * Waits for work without spinning: on the codec while a picture is still decoding (so the
+     * final or only picture of a static screen is rendered promptly), otherwise on the queue.
+     */
+    private fun nextJob(): VideoJob? {
+        queue.poll(0)?.let { return it }
+        val codec = decoder
+        if (codec != null && inFlight > 0) {
+            if (System.nanoTime() - lastQueuedNs < OUTPUT_WAIT_LIMIT_NS) {
+                drainOutput(codec, OUTPUT_WAIT_US)
+                return null
+            }
+            // A picture the codec dropped never comes out; stop waiting on it.
+            inFlight = 0
+        }
+        return queue.poll(IDLE_WAIT_MS)
     }
 
     private fun configureDecoder(config: VideoJob.Config) {
@@ -502,7 +546,7 @@ private class VideoDecoder(
         syncGate = VideoSyncGate(codec)
         pump = VideoDecodePump(object : VideoDecodePump.Port {
             override fun drain() = drainOutput(next)
-            override fun queue(bytes: ByteArray, presentationTimeUs: Long): Boolean {
+            override fun queue(bytes: ByteArray, size: Int, presentationTimeUs: Long): Boolean {
                 val index = next.dequeueInputBuffer(0)
                 if (index < 0) {
                     inputRetries++
@@ -510,10 +554,12 @@ private class VideoDecoder(
                 }
                 val input = checkNotNull(next.getInputBuffer(index)) { "Missing video input buffer" }
                 input.clear()
-                check(bytes.size <= input.remaining()) { "Video access unit exceeds decoder input capacity" }
-                input.put(bytes)
-                next.queueInputBuffer(index, 0, bytes.size, presentationTimeUs, 0)
+                check(size <= input.remaining()) { "Video access unit exceeds decoder input capacity" }
+                input.put(bytes, 0, size)
+                next.queueInputBuffer(index, 0, size, presentationTimeUs, 0)
                 inputCount++
+                inFlight++
+                lastQueuedNs = System.nanoTime()
                 return true
             }
         })
@@ -555,6 +601,8 @@ private class VideoDecoder(
             try {
                 codec.setOutputSurface(surface)
                 Log.i(TAG, "video decoder output surface updated")
+                // The new Surface stays empty until the next picture, which a static screen never sends.
+                needsKeyFrame = true
                 return
             } catch (error: Exception) {
                 Log.w(TAG, "video decoder output surface update failed; reconfiguring", error)
@@ -565,8 +613,9 @@ private class VideoDecoder(
     }
 
     private fun feed(frame: VideoJob.Frame) {
+        val accessUnit = frame.accessUnit
         if (decoder == null) {
-            if (outputSurface == null) return
+            if (outputSurface == null) { accessUnit.close(); return }
             val config = lastConfig
             if (config == null) {
                 // The phone emits its codec config (opcode=1) before the first
@@ -577,36 +626,52 @@ private class VideoDecoder(
                     Log.i(TAG, "video frames without codec config; requesting keyframe")
                 }
                 needsKeyFrame = true
+                accessUnit.close()
                 return
             }
-            configureDecoder(config)
+            try { configureDecoder(config) } catch (error: Throwable) {
+                accessUnit.close()
+                throw error
+            }
         }
-        val activePump = pump ?: return
-        val annexB = MediaCodecSupport.toAnnexB(frame.nalus)
-        require(annexB.isNotEmpty()) { "Malformed video access unit" }
-        if (syncGate?.accept(annexB) != true) {
+        val activePump = pump ?: run { accessUnit.close(); return }
+        val accepted = try {
+            syncGate?.accept(accessUnit.bytes, accessUnit.size) == true
+        } catch (error: Throwable) {
+            accessUnit.close()
+            throw error
+        }
+        if (!accepted) {
             // RASL intentionally skipped after CRA does not mean sync was lost.
             if (syncGate?.waitingForRandomAccess == true) {
                 needsKeyFrame = true
                 syncSkips++
             }
+            accessUnit.close()
             return
         }
         needsKeyFrame = false
         if (!submittedFrameLogged) {
             submittedFrameLogged = true
-            Log.i(TAG, "video decoder first random access input bytes=${annexB.size}")
+            Log.i(TAG, "video decoder first random access input bytes=${accessUnit.size}")
         }
         lastPtsUs = maxOf(lastPtsUs + 1, frame.receivedUs)
-        activePump.submit(annexB, lastPtsUs)
+        try {
+            activePump.submit(accessUnit.bytes, accessUnit.size, lastPtsUs, accessUnit::close)
+        } catch (error: Throwable) {
+            accessUnit.close()
+            throw error
+        }
         pendingSinceNs = System.nanoTime()
         activePump.tick()
     }
 
-    private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+    private fun drainOutput(codec: MediaCodec, firstTimeoutUs: Long = 0) {
+        val info = drainInfo
+        var timeoutUs = firstTimeoutUs
         while (running) {
-            val index = codec.dequeueOutputBuffer(info, 0)
+            val index = codec.dequeueOutputBuffer(info, timeoutUs)
+            timeoutUs = 0
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(codec.outputFormat)
@@ -614,6 +679,7 @@ private class VideoDecoder(
                     val render = outputSurface != null &&
                         info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0
                     outputCount++
+                    if (inFlight > 0) inFlight--
                     maxOutputAgeUs = maxOf(maxOutputAgeUs, System.nanoTime() / 1000 - info.presentationTimeUs)
                     codec.releaseOutputBuffer(index, render)
                     if (render) {
@@ -670,8 +736,10 @@ private class VideoDecoder(
     private fun releaseDecoder() {
         val codec = decoder
         decoder = null
+        pump?.clear()
         pump = null
         syncGate = null
+        inFlight = 0
         if (codec != null) {
             needsKeyFrame = true
             try {
@@ -693,6 +761,13 @@ private class VideoDecoder(
         const val INPUT_STALL_NS = 2_000_000_000L
         const val KEY_FRAME_REQUEST_INTERVAL_NS = 2_000_000_000L
         const val SURFACE_DETACH_TIMEOUT_MS = 1_000L
+        /** Longest single block on the codec, so a newly queued picture is fed without much delay. */
+        const val OUTPUT_WAIT_US = 8_000L
+        /** After this, a queued picture with no output is treated as dropped by the codec. */
+        const val OUTPUT_WAIT_LIMIT_NS = 500_000_000L
+        /** Idle wait; Surface changes and new work wake the worker earlier. */
+        const val IDLE_WAIT_MS = 100L
+        const val IDLE_WAIT_NS = IDLE_WAIT_MS * 1_000_000L
         val START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
     }
 }
@@ -779,8 +854,7 @@ private class AudioRenderer(
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
         try {
             when (format.codec) {
-                AudioCodecKind.AAC_LC -> configureCodec(MediaFormat.MIMETYPE_AUDIO_AAC)
-                AudioCodecKind.OPUS -> configureCodec(MediaFormat.MIMETYPE_AUDIO_OPUS)
+                AudioCodecKind.AAC_LC, AudioCodecKind.AAC_ELD, AudioCodecKind.OPUS -> configureCodec()
                 AudioCodecKind.LPCM -> Unit
             }
             createTrack()
@@ -794,34 +868,21 @@ private class AudioRenderer(
         }
     }
 
-    private fun configureCodec(mime: String) {
-        val mediaFormat = MediaFormat().apply {
-            setString(MediaFormat.KEY_MIME, mime)
-            setInteger(MediaFormat.KEY_SAMPLE_RATE, format.sampleRate)
-            setInteger(MediaFormat.KEY_CHANNEL_COUNT, format.channels)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
-            if (mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
-                setInteger(MediaFormat.KEY_IS_ADTS, 1)
-                setByteBuffer("csd-0", ByteBuffer.wrap(aacAudioSpecificConfig()))
-            } else {
-                setByteBuffer("csd-0", ByteBuffer.wrap(opusHead()))
-                setByteBuffer("csd-1", ByteBuffer.wrap(opusCodecDelay()))
-                setByteBuffer("csd-2", ByteBuffer.wrap(opusSeekPreRoll()))
-            }
-        }
+    private fun configureCodec() {
+        // 与 AudioQualityCapabilities 的探测走同一套格式和解码器选择，探测通过就一定能在这里打开。
+        val mediaFormat = AudioDecoders.format(format.codec, format.sampleRate, format.channels, format.framesPerPacket)
+        val mime = mediaFormat.getString(MediaFormat.KEY_MIME)
         if (mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
             Log.i(
                 TAG,
-                "audio AAC config rate=${format.sampleRate} channels=${format.channels} " +
+                "audio AAC config codec=${format.codec} rate=${format.sampleRate} channels=${format.channels} " +
                     "csd0=${aacAudioSpecificConfig().toHexString()}",
             )
         }
         codec = try {
-            MediaCodec.createDecoderByType(mime).also {
-                it.configure(mediaFormat, null, null, 0)
-                it.start()
-                Log.i(TAG, "audio decoder configured mime=$mime name=${it.name}")
-            }
+            val (decoder, name) = AudioDecoders.open(mediaFormat, AudioDecoders.candidates(format.codec))
+            Log.i(TAG, "audio decoder configured mime=$mime name=$name")
+            decoder
         } catch (error: Exception) {
             Log.e(TAG, "audio decoder configuration failed mime=$mime", error)
             null
@@ -886,11 +947,11 @@ private class AudioRenderer(
     }
 
     private fun aacAudioSpecificConfig(): ByteArray {
-        val frequencyIndex = MediaCodecSupport.aacFrequencyIndex(format.sampleRate)
-        val value = (AAC_OBJECT_TYPE_LC shl 11) or
-            (frequencyIndex shl 7) or
-            (format.channels.coerceIn(1, 7) shl 3)
-        return byteArrayOf((value ushr 8).toByte(), value.toByte())
+        if (format.codec == AudioCodecKind.AAC_ELD) {
+            return AacEldFormat.audioSpecificConfig(format.sampleRate, format.channels,
+                format.framesPerPacket ?: AacEldFormat.DEFAULT_FRAMES_PER_PACKET)
+        }
+        return AacLcFormat.audioSpecificConfig(format.sampleRate, format.channels)
     }
 
     private fun audioAttributes(): AudioAttributes {
@@ -932,33 +993,6 @@ private class AudioRenderer(
         AudioContentType.SPEECH -> AudioAttributes.CONTENT_TYPE_SPEECH
     }
 
-    /** Minimal OpusHead CSD for the mono 48 kHz stream CarPlay negotiates. */
-    private fun opusHead(): ByteArray {
-        val head = ByteArray(19)
-        "OpusHead".toByteArray(Charsets.US_ASCII).copyInto(head, 0)
-        head[8] = 1
-        head[9] = format.channels.toByte()
-        head[10] = 0x38
-        head[11] = 0x01
-        head[12] = format.sampleRate.toByte()
-        head[13] = (format.sampleRate ushr 8).toByte()
-        head[14] = (format.sampleRate ushr 16).toByte()
-        head[15] = (format.sampleRate ushr 24).toByte()
-        return head
-    }
-
-    private fun opusCodecDelay(): ByteArray =
-        java.nio.ByteBuffer.allocate(8)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            .putLong(OPUS_CODEC_DELAY_NANOS)
-            .array()
-
-    private fun opusSeekPreRoll(): ByteArray =
-        java.nio.ByteBuffer.allocate(8)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            .putLong(OPUS_SEEK_PRE_ROLL_NANOS)
-            .array()
-
     private fun handle(packet: AudioPacket) {
         val rtp = packet.rtp
         val timestampUs = sampleTimestampUs(packet.sample)
@@ -980,6 +1014,10 @@ private class AudioRenderer(
                         timestampUs,
                     )
                 }
+            }
+            AudioCodecKind.AAC_ELD -> {
+                val accessUnit = rtp.copyOfRange(12, rtp.size)
+                if (accessUnit.isNotEmpty()) feedCodec(accessUnit, timestampUs)
             }
             AudioCodecKind.OPUS -> {
                 val accessUnit = rtp.copyOfRange(12, rtp.size)
@@ -1249,10 +1287,7 @@ private class AudioRenderer(
 
     private companion object {
         const val TAG = "xcertplay-usb"
-        const val AAC_OBJECT_TYPE_LC = 2
         const val MIN_OPUS_PACKET_BYTES = 4
-        const val OPUS_CODEC_DELAY_NANOS = 6_500_000L
-        const val OPUS_SEEK_PRE_ROLL_NANOS = 80_000_000L
         const val INPUT_TIMEOUT_US = 10_000L
         const val MAX_QUEUED_PACKETS = 64
         const val MIN_TRACK_BUFFER_BYTES = 16 * 1024

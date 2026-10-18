@@ -1,7 +1,11 @@
 package com.shilapi.xcertplay
 
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 import android.Manifest
 import android.content.ActivityNotFoundException
@@ -18,6 +22,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Log
@@ -37,6 +42,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -71,6 +79,7 @@ import androidx.compose.material3.Surface as M3Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -84,6 +93,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
@@ -92,6 +102,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.shilapi.xcertplay.airplay.AudioCodecKind
+import com.shilapi.xcertplay.airplay.AudioQualityLimit
+import com.shilapi.xcertplay.airplay.AudioQualityProfiles
+import com.shilapi.xcertplay.airplay.AudioQualitySettings
+import com.shilapi.xcertplay.media.AudioQualityCapabilities
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
@@ -111,6 +126,7 @@ import com.shilapi.xcertplay.ui.components.Banner
 import com.shilapi.xcertplay.ui.components.BannerKind
 import com.shilapi.xcertplay.ui.components.FieldRow
 import com.shilapi.xcertplay.ui.components.HelpText
+import com.shilapi.xcertplay.ui.components.IconVectors
 import com.shilapi.xcertplay.ui.components.KeyValueList
 import com.shilapi.xcertplay.ui.components.LargeTopBar
 import com.shilapi.xcertplay.ui.components.LinearMeter
@@ -129,6 +145,7 @@ import com.shilapi.xcertplay.ui.components.StatusPill
 import com.shilapi.xcertplay.ui.components.SwitchRow
 import com.shilapi.xcertplay.ui.components.TrailingValue
 import com.shilapi.xcertplay.ui.components.tabular
+import com.shilapi.xcertplay.ui.home.HOME_SCREEN_ICONS
 import com.shilapi.xcertplay.ui.home.HomeScreen
 import com.shilapi.xcertplay.ui.home.StreamingLogOverlay
 import com.shilapi.xcertplay.ui.i18n.I18n
@@ -369,7 +386,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var connectionStatus by mutableStateOf("Preparing CarPlay")
     private var handshakeTimeline by mutableStateOf<HandshakeTimeline?>(null)
     private var timelineRevision by mutableIntStateOf(0)
-    private var timelineRenderScheduled = false
+    private var timelineDirty = false
     private var lastAttemptFailure: String? = null
     private var configSummary by mutableStateOf<List<Pair<String, String>>>(emptyList())
     private var manualHotspotError by mutableStateOf<String?>(null)
@@ -404,6 +421,12 @@ class CarPlayHostActivity : ComponentActivity() {
     private var advancedAudioChannelMappingSupported = false
     private var advancedAudioChannelMapping by mutableStateOf(false)
     private var audioFocusEnabled by mutableStateOf(true)
+    private var audioQuality by mutableStateOf(AudioQualitySettings())
+    private var audioQualityOpen by mutableStateOf(false)
+    private var audioQualityCapabilities by mutableStateOf<AudioQualityCapabilities.Result?>(null)
+    private var audioQualityChecking by mutableStateOf(false)
+    private var audioQualityProbeFailure by mutableStateOf<String?>(null)
+    private var audioQualityProbeJob: Job? = null
     private var mainMediaAudioBufferDurationMs by mutableIntStateOf(MainMediaAudioBuffer.DEFAULT_DURATION_MS)
     // Snapshot state is safe to read from the media and log threads.
     private var debugLogsEnabled by mutableStateOf(false)
@@ -563,28 +586,52 @@ class CarPlayHostActivity : ComponentActivity() {
             java.util.concurrent.LinkedBlockingQueue(),
         ).apply { allowCoreThreadTimeOut(true) }
     private val logLines = ScreenLogBuffer(MAX_SCREEN_LOG_LINES)
+    // Log receipt and log display are decoupled: any thread only queues records, and the UI
+    // takes them in one batch per LOG_FRAME_MILLIS, however fast the session logs.
     private val pendingScreenLogs = ArrayDeque<PendingLog>()
+    private val pendingHandshakeLogs = ArrayDeque<PendingRecord>()
     private val pendingScreenLogsLock = Any()
-    private var screenDrainPosted = false
-    private val drainScreenLogs = Runnable {
-        val pending = synchronized(pendingScreenLogsLock) {
-            screenDrainPosted = false
-            pendingScreenLogs.toList().also { pendingScreenLogs.clear() }
+    private var logFrameScheduled = false
+    @Volatile private var lastLogFrameAt = 0L
+    private var lastTimelinePublishAt = 0L
+    private var inLogFrame = false
+    private var screenLogsDirty = false
+    private val logFrame = Runnable {
+        val (handshake, screen) = synchronized(pendingScreenLogsLock) {
+            logFrameScheduled = false
+            (pendingHandshakeLogs.toList() to pendingScreenLogs.toList()).also {
+                pendingHandshakeLogs.clear()
+                pendingScreenLogs.clear()
+            }
         }
-        if (debugLogsEnabled && !menuOpen) {
-            pending.forEach { entry ->
-                if (entry.generation == restartGeneration) {
-                    appendScreenLog(entry.timestampMillis, entry.message)
+        val now = SystemClock.uptimeMillis()
+        lastLogFrameAt = now
+        inLogFrame = true
+        try {
+            handshake.forEach { recordHandshake(it.generation, it.record, it.timestampMillis) }
+            if (debugLogsEnabled && !menuOpen) {
+                screen.forEach { entry ->
+                    if (entry.generation == restartGeneration) {
+                        appendScreenLog(entry.timestampMillis, entry.message)
+                    }
                 }
             }
+        } finally {
+            inLogFrame = false
+        }
+        if (timelineDirty) {
+            timelineDirty = false
+            timelineRevision++
+            lastTimelinePublishAt = now
+        }
+        if (screenLogsDirty) {
+            screenLogsDirty = false
+            refreshLogView(System.currentTimeMillis())
         }
     }
     private val expireOldLogLines = Runnable { refreshLogView(System.currentTimeMillis()) }
-    private var logRenderScheduled = false
-    private val renderLogLines = Runnable {
-        logRenderScheduled = false
-        refreshLogView(System.currentTimeMillis())
-    }
+    private var mainStreamReadyAt = 0L
+    private val revealMainStream = Runnable { maybeRevealMainStream() }
     private val applyDisplaySize = Runnable {
         val size = pendingDisplaySize ?: return@Runnable
         pendingDisplaySize = null
@@ -613,6 +660,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        IconVectors.preload(applicationContext.resources, HOME_SCREEN_ICONS)
         initializeSessionLog()
         I18n.init(this)
         darkMode = isDarkMode(resources.configuration.uiMode)
@@ -631,6 +679,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     if (menuOpen) {
                         when {
                             safeAreaEditorActive -> closeSafeAreaEditor()
+                            audioQualityOpen -> audioQualityOpen = false
                             settingsCategory != null && !settingsTwoPane -> settingsCategory = null
                             else -> cancelSettingsEdits()
                         }
@@ -672,6 +721,7 @@ class CarPlayHostActivity : ComponentActivity() {
             advancedAudioChannelMappingSupported &&
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
         audioFocusEnabled = AirPlayPersistence.loadAudioFocusEnabled(this)
+        audioQuality = AirPlayPersistence.loadAudioQuality(this)
         mainMediaAudioBufferDurationMs =
             AirPlayPersistence.loadMainMediaAudioBufferDurationMs(this)
         microphoneGainPercent = AirPlayPersistence.loadMicrophoneGainPercent(this)
@@ -854,9 +904,8 @@ class CarPlayHostActivity : ComponentActivity() {
         clusterPreviewSurface?.let { detachSurface(SCREEN_TYPE_ALT, it); it.release() }
         clusterPreviewSurface = null
         mainHandler.removeCallbacks(expireOldLogLines)
-        mainHandler.removeCallbacks(renderLogLines)
-        mainHandler.removeCallbacks(drainScreenLogs)
-        mainHandler.removeCallbacks(publishTimeline)
+        mainHandler.removeCallbacks(logFrame)
+        mainHandler.removeCallbacks(revealMainStream)
         currentSurface?.let { detachSurface(SCREEN_TYPE_MAIN, it) }
         currentSurface = null
         sessionLog.append("Activity destroyed; background session and log remain active")
@@ -1180,6 +1229,7 @@ class CarPlayHostActivity : ComponentActivity() {
         AirPlayPersistence.saveAutoStartOnBoot(this, autoStartOnBoot)
         AirPlayPersistence.saveAdvancedAudioChannelMapping(this, advancedAudioChannelMapping)
         AirPlayPersistence.saveAudioFocusEnabled(this, audioFocusEnabled)
+        AirPlayPersistence.saveAudioQuality(this, audioQuality)
         AirPlayPersistence.saveMainMediaAudioBufferDurationMs(
             this,
             mainMediaAudioBufferDurationMs,
@@ -1712,6 +1762,10 @@ class CarPlayHostActivity : ComponentActivity() {
             rightHandDrive = rightHandDrive,
             hevc = hevcEnabled,
             microphone = microphoneAvailable,
+            // 用进程级缓存而不是设置页状态：是否按实测收窄，不能取决于这次有没有点进音频质量页。
+            // 本进程还没探测过时为 null，保持协议默认声明。
+            audioQuality = effectiveAudioQuality(buildQualityOptions(AudioQualityCapabilities.cached())),
+            audioSupportedFormats = AudioQualityCapabilities.cached()?.allowedFormatBits,
             manufacturer = normalizedManufacturer(),
             model = normalizedModel(),
             oemLabel = oemLabel,
@@ -1958,19 +2012,17 @@ class CarPlayHostActivity : ComponentActivity() {
             override fun onDebugLog(message: String) {
                 val now = System.currentTimeMillis()
                 appendFileLog(message, now)
-                if (HandshakeTimeline.isRelevant(message)) {
-                    mainHandler.post { recordHandshake(controllerGeneration, message, now) }
-                }
-                if (!debugLogsEnabled) return
-                val summary = ScreenLogPolicy.summary(message) ?: return
+                // Decoded here, on the session thread, so the log frame only updates the model.
+                val handshake = if (HandshakeTimeline.isRelevant(message)) HandshakeTimeline.prepare(message) else null
+                val summary = if (debugLogsEnabled) ScreenLogPolicy.summary(message) else null
+                if (handshake == null && summary == null) return
                 synchronized(pendingScreenLogsLock) {
-                    if (!debugLogsEnabled) return
-                    pendingScreenLogs.addLast(PendingLog(controllerGeneration, now, summary))
-                    if (pendingScreenLogs.size > MAX_SCREEN_LOG_LINES) pendingScreenLogs.removeFirst()
-                    if (!screenDrainPosted) {
-                        screenDrainPosted = true
-                        mainHandler.post(drainScreenLogs)
+                    if (handshake != null) pendingHandshakeLogs.addLast(PendingRecord(controllerGeneration, now, handshake))
+                    if (summary != null && debugLogsEnabled) {
+                        pendingScreenLogs.addLast(PendingLog(controllerGeneration, now, summary))
+                        if (pendingScreenLogs.size > MAX_SCREEN_LOG_LINES) pendingScreenLogs.removeFirst()
                     }
+                    scheduleLogFrameLocked()
                 }
             }
         }
@@ -2400,6 +2452,12 @@ class CarPlayHostActivity : ComponentActivity() {
         setConnectionStage("Reconnecting after settings")
         gestureOverlay?.visibility = View.GONE
         settingsCategory = null
+        audioQualityOpen = false
+        audioQualityCapabilities = null
+        audioQualityChecking = false
+        audioQualityProbeFailure = null
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeJob = null
         mfiError = null
         manualHotspotError = null
         resetWebDisplayDrafts()
@@ -2458,6 +2516,10 @@ class CarPlayHostActivity : ComponentActivity() {
         stopMicrophoneGainTest()
         menuOpen = false
         settingsCategory = null
+        audioQualityOpen = false
+        audioQualityChecking = false
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeJob = null
         gestureOverlay?.visibility = View.VISIBLE
         updateWebDisplayPreviews()
         updateDebugOverlays()
@@ -2520,7 +2582,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun detachSurface(type: Int, surface: Surface) {
         val outputs = CarPlayWebDisplayFactory.find(sink)
-        if (outputs?.owns(type) == true) outputs.preview(type, null) else sink?.clearSurface(type, surface)
+        if (outputs?.owns(type) == true) outputs.releasePreview(type, surface) else sink?.clearSurface(type, surface)
     }
 
     private fun updateWebDisplayPreviews() {
@@ -2735,9 +2797,45 @@ class CarPlayHostActivity : ComponentActivity() {
 
     /** Re-derives what the overlay shows; the Compose layer reads the state set here. */
     private fun updateDebugOverlays() {
-        mainStreamActive = SCREEN_TYPE_MAIN in activeScreenStreamTypes
+        if (SCREEN_TYPE_MAIN !in activeScreenStreamTypes) {
+            mainHandler.removeCallbacks(revealMainStream)
+            mainStreamReadyAt = 0L
+            mainStreamActive = false
+        } else if (!mainStreamActive) {
+            if (mainStreamReadyAt == 0L) mainStreamReadyAt = SystemClock.uptimeMillis()
+            maybeRevealMainStream()
+            return
+        }
         applySystemBarAppearance()
         updateMediaMetricsOverlay()
+    }
+
+    /**
+     * Video replaces the home screen only once the handshake list has shown its last record for
+     * LOG_FRAME_MILLIS, so the final step is seen; a session that never stops logging waits at
+     * most MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS.
+     */
+    private fun maybeRevealMainStream() {
+        mainHandler.removeCallbacks(revealMainStream)
+        if (mainStreamActive || SCREEN_TYPE_MAIN !in activeScreenStreamTypes) return
+        val now = SystemClock.uptimeMillis()
+        val pending = synchronized(pendingScreenLogsLock) { pendingHandshakeLogs.isNotEmpty() }
+        val settledAt = if (pending || timelineDirty) now + LOG_FRAME_MILLIS else lastTimelinePublishAt + LOG_FRAME_MILLIS
+        val revealAt = minOf(settledAt, mainStreamReadyAt + MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS)
+        if (revealAt > now) {
+            mainHandler.postDelayed(revealMainStream, revealAt - now)
+            return
+        }
+        mainStreamReadyAt = 0L
+        mainStreamActive = true
+        applySystemBarAppearance()
+        updateMediaMetricsOverlay()
+    }
+
+    private fun scheduleLogFrameLocked() {
+        if (logFrameScheduled) return
+        logFrameScheduled = true
+        mainHandler.postAtTime(logFrame, maxOf(SystemClock.uptimeMillis(), lastLogFrameAt + LOG_FRAME_MILLIS))
     }
 
     /** Dark bar icons only over our own light surfaces; video and the safe-area editor are dark. */
@@ -2750,22 +2848,16 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun recordHandshake(controllerGeneration: Int, message: String, atMillis: Long) {
+    private fun recordHandshake(controllerGeneration: Int, record: HandshakeTimeline.Prepared, atMillis: Long) {
         if (controllerGeneration != restartGeneration) return
         val timeline = handshakeTimeline ?: return
-        if (timeline.accept(message, atMillis)) notifyTimelineChanged()
+        if (timeline.accept(record, atMillis)) notifyTimelineChanged()
     }
 
-    private val publishTimeline = Runnable {
-        timelineRenderScheduled = false
-        timelineRevision++
-    }
-
-    /** Coalesces bursts of handshake records into one UI update. */
+    /** The next log frame publishes the change, together with whatever else arrived. */
     private fun notifyTimelineChanged() {
-        if (timelineRenderScheduled) return
-        timelineRenderScheduled = true
-        mainHandler.postDelayed(publishTimeline, TIMELINE_RENDER_INTERVAL_MILLIS)
+        timelineDirty = true
+        if (!inLogFrame) synchronized(pendingScreenLogsLock) { scheduleLogFrameLocked() }
     }
 
     private fun failHandshake(title: String, detail: String) {
@@ -2827,10 +2919,8 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun appendScreenLog(timestampMillis: Long, message: String) {
         val summary = ScreenLogPolicy.summary(message) ?: return
         logLines.add(timestampMillis, formattedLogLine(summary, timestampMillis))
-        if (!logRenderScheduled) {
-            logRenderScheduled = true
-            mainHandler.postDelayed(renderLogLines, LOG_RENDER_INTERVAL_MILLIS)
-        }
+        screenLogsDirty = true
+        if (!inLogFrame) synchronized(pendingScreenLogsLock) { scheduleLogFrameLocked() }
     }
 
     private fun appendFileLog(message: String, timestampMillis: Long) =
@@ -2868,13 +2958,10 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun clearScreenLogs() {
         synchronized(pendingScreenLogsLock) {
             pendingScreenLogs.clear()
-            screenDrainPosted = false
         }
-        mainHandler.removeCallbacks(drainScreenLogs)
         logLines.clear()
         mainHandler.removeCallbacks(expireOldLogLines)
-        mainHandler.removeCallbacks(renderLogLines)
-        logRenderScheduled = false
+        screenLogsDirty = false
         screenLogs = emptyList()
     }
 
@@ -2922,11 +3009,21 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun HostOverlay() {
+        // The home screen stays composed while it fades out over the video already decoding below.
+        val homeAlpha = remember { Animatable(if (mainStreamActive) 0f else 1f) }
+        LaunchedEffect(mainStreamActive) {
+            if (mainStreamActive) {
+                homeAlpha.animateTo(0f, tween(STREAM_REVEAL_FADE_MILLIS, easing = LinearEasing))
+            } else {
+                homeAlpha.snapTo(1f)
+            }
+        }
+        val homeVisible = !mainStreamActive || homeAlpha.targetValue != 0f || homeAlpha.isRunning
         Box(Modifier.fillMaxSize()) {
             when {
                 safeAreaEditorActive -> SafeAreaEditorChrome()
                 menuOpen -> SettingsScreen()
-                !mainStreamActive -> HomeScreen(
+                homeVisible -> HomeScreen(
                     timeline = handshakeTimeline,
                     revision = timelineRevision,
                     status = connectionStatus,
@@ -2935,6 +3032,8 @@ class CarPlayHostActivity : ComponentActivity() {
                     logLines = screenLogs,
                     onOpenSettings = { openSettingsMenu() },
                     onRetry = if (reconnectExhausted) ::reconnectManually else null,
+                    // Read in the draw phase only: the fade redraws frames without recomposing.
+                    modifier = Modifier.graphicsLayer { alpha = homeAlpha.value },
                 )
                 debugLogsEnabled -> StreamingLogOverlay(screenLogs, Modifier.align(Alignment.BottomStart))
             }
@@ -2971,7 +3070,7 @@ class CarPlayHostActivity : ComponentActivity() {
                                         support = category.summary,
                                         leadingIcon = category.icon,
                                         selected = category == selected,
-                                        onClick = { settingsCategory = category },
+                                        onClick = { settingsCategory = category; audioQualityOpen = false },
                                     )
                                 }
                             }
@@ -2987,7 +3086,12 @@ class CarPlayHostActivity : ComponentActivity() {
                         ) {
                             ProvideGroupColor(scheme.surfaceContainerHigh) {
                                 Column(Modifier.fillMaxSize()) {
-                                    SmallTopBar(title = selected.title)
+                                    SmallTopBar(
+                                        title = if (audioQualityOpen) tr("settings.audio.quality") else selected.title,
+                                        navigation = if (audioQualityOpen) {
+                                            { LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), { audioQualityOpen = false }) }
+                                        } else null,
+                                    )
                                     CategoryContent(selected, Modifier.weight(1f))
                                 }
                             }
@@ -3010,7 +3114,7 @@ class CarPlayHostActivity : ComponentActivity() {
                                         support = category.summary,
                                         leadingIcon = category.icon,
                                         leadingBox = true,
-                                        onClick = { settingsCategory = category },
+                                        onClick = { settingsCategory = category; audioQualityOpen = false },
                                         trailing = { TrailingValue(null) },
                                     )
                                 }
@@ -3018,9 +3122,11 @@ class CarPlayHostActivity : ComponentActivity() {
                             }
                         } else {
                             SmallTopBar(
-                                title = current.title,
+                                title = if (audioQualityOpen) tr("settings.audio.quality") else current.title,
                                 navigation = {
-                                    LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), { settingsCategory = null })
+                                    LvIconButton(R.drawable.ic_ms_arrow_back, tr("common.back"), {
+                                        if (audioQualityOpen) audioQualityOpen = false else settingsCategory = null
+                                    })
                                 },
                             )
                             CategoryContent(current, Modifier.weight(1f))
@@ -3083,7 +3189,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun CategoryContent(category: SettingsCategory, modifier: Modifier) {
-        key(category) {
+        key(category, audioQualityOpen) {
             Column(
                 modifier
                     .fillMaxWidth()
@@ -3093,7 +3199,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 when (category) {
                     SettingsCategory.CONNECTION -> ConnectionSettings()
                     SettingsCategory.VEHICLE -> VehicleSettings()
-                    SettingsCategory.AUDIO -> AudioSettings()
+                    SettingsCategory.AUDIO -> if (audioQualityOpen) AudioQualitySettingsContent() else AudioSettings()
                     SettingsCategory.DISPLAY -> DisplaySettings()
                     SettingsCategory.WEB -> WebDisplaySettings()
                     SettingsCategory.IDENTITY -> IdentitySettings()
@@ -3483,6 +3589,16 @@ class CarPlayHostActivity : ComponentActivity() {
 
     @Composable
     private fun AudioSettings() {
+        SettingsGroup {
+            row {
+                ListRow(
+                    headline = tr("settings.audio.quality"),
+                    support = tr("settings.audio.quality.summary"),
+                    onClick = ::openAudioQualitySettings,
+                    trailing = { TrailingValue(null) },
+                )
+            }
+        }
         SectionHeader(tr("settings.audio.playback"))
         val bufferValues = remember {
             (MainMediaAudioBuffer.MIN_DURATION_MS..MainMediaAudioBuffer.MAX_DURATION_MS step
@@ -3534,6 +3650,210 @@ class CarPlayHostActivity : ComponentActivity() {
             row { MicrophoneTestRow() }
         }
     }
+
+    private enum class QualityStream(val route: AudioQualityProfiles.Route, val key: String) {
+        MUSIC(AudioQualityProfiles.Route.MUSIC, "music"),
+        ASSISTANT(AudioQualityProfiles.Route.ASSISTANT, "assistant"),
+        NAVIGATION(AudioQualityProfiles.Route.NAVIGATION, "navigation"),
+        PHONE(AudioQualityProfiles.Route.PHONE, "phone"),
+        MICROPHONE(AudioQualityProfiles.Route.MICROPHONE, "microphone"),
+    }
+
+    /** 每一路当前可选的声道与采样率：协议允许 ∩ 本机能力 ∩ 用户设置的上限。 */
+    private class QualityOptions(private val byStream: Map<QualityStream, Map<Int, List<Int>>>) {
+        // 预先算好，避免每次重组都过滤排序一遍。
+        private val channelLists = byStream.mapValues { (_, byChannels) ->
+            byChannels.filterValues { it.isNotEmpty() }.keys.sorted()
+        }
+
+        fun channels(stream: QualityStream): List<Int> = channelLists[stream].orEmpty()
+
+        fun rates(stream: QualityStream, channels: Int): List<Int> =
+            byStream[stream]?.get(channels).orEmpty()
+
+        /** 用户设置是上限：在可用项里取不超过它的最大值。 */
+        fun effective(stream: QualityStream, requested: AudioQualityLimit): AudioQualityLimit? {
+            val channels = channels(stream).lastOrNull { it <= requested.channels } ?: return null
+            val rate = rates(stream, channels).lastOrNull { it <= requested.sampleRate } ?: return null
+            return AudioQualityLimit(rate, channels)
+        }
+    }
+
+    private fun openAudioQualitySettings() {
+        audioQualityOpen = true
+        // 先渲染缓存结果，设备没变化时不会出现"检测中"跳变，也不会重复探测。
+        audioQualityCapabilities = AudioQualityCapabilities.cached()
+        requestAudioQualityProbe()
+    }
+
+    /**
+     * 只在实际需要时探测。探测结果按音频设备指纹缓存在 [AudioQualityCapabilities] 里，
+     * 设备不变时这次调用几乎立即返回，不会重复创建 AudioTrack / MediaCodec。
+     */
+    private fun requestAudioQualityProbe(force: Boolean = false) {
+        audioQualityProbeJob?.cancel()
+        audioQualityProbeFailure = null
+        val known = AudioQualityCapabilities.cached()
+        // 已有可用结果时不再显示"检测中"：设备没变化的话这轮只是校验指纹，
+        // 让页面在这里闪一下再展开属实没必要。
+        audioQualityChecking = known == null || known.failure != null
+        audioQualityProbeJob = lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    Result.success(AudioQualityCapabilities.probe(applicationContext, force))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    Result.failure(error)
+                }
+            }
+            audioQualityChecking = false
+            if (!audioQualityOpen) return@launch
+            val result = outcome.getOrNull()
+            // 命中缓存时返回的是同一个实例；跳过赋值可以省掉整页重组。
+            if (result != null && result !== known) audioQualityCapabilities = result
+            outcome.exceptionOrNull()?.let { error ->
+                audioQualityProbeFailure = error.message ?: error.javaClass.simpleName
+                Log.w(TAG, "音频能力检测失败", error)
+            }
+        }
+    }
+
+    private fun qualityLimit(stream: QualityStream): AudioQualityLimit = when (stream) {
+        QualityStream.MUSIC -> audioQuality.music
+        QualityStream.ASSISTANT -> audioQuality.assistant
+        QualityStream.NAVIGATION -> audioQuality.navigation
+        QualityStream.PHONE -> audioQuality.phone
+        QualityStream.MICROPHONE -> audioQuality.microphone
+    }
+
+    private fun setQualityLimit(stream: QualityStream, limit: AudioQualityLimit) {
+        audioQuality = when (stream) {
+            QualityStream.MUSIC -> audioQuality.copy(music = limit)
+            QualityStream.ASSISTANT -> audioQuality.copy(assistant = limit)
+            QualityStream.NAVIGATION -> audioQuality.copy(navigation = limit)
+            QualityStream.PHONE -> audioQuality.copy(phone = limit)
+            QualityStream.MICROPHONE -> audioQuality.copy(microphone = limit)
+        }
+    }
+
+    private fun buildQualityOptions(
+        caps: AudioQualityCapabilities.Result? = audioQualityCapabilities,
+    ): QualityOptions {
+        if (caps == null || caps.failure != null) return QualityOptions(emptyMap())
+        val opus = audioQuality.opusEnabled
+        return QualityOptions(
+            QualityStream.entries.associateWith { stream ->
+                AudioQualityProfiles.channels(stream.route, wirelessEnabled, opus).associateWith { channels ->
+                    AudioQualityProfiles.rates(stream.route, wirelessEnabled, opus)
+                        .filter { it in machineRates(caps, stream.route, channels, opus) }
+                }
+            },
+        )
+    }
+
+    /** 某一路某种声道数下，本机真正能处理的采样率。 */
+    private fun machineRates(
+        caps: AudioQualityCapabilities.Result,
+        route: AudioQualityProfiles.Route,
+        channels: Int,
+        opus: Boolean,
+    ): List<Int> = when {
+        // 无线且关闭 Opus 时，麦克风上行走 ELD 编码，由编码器实测结果决定。
+        route == AudioQualityProfiles.Route.MICROPHONE && wirelessEnabled && !opus -> caps.eldMicrophoneRates
+        route == AudioQualityProfiles.Route.MICROPHONE && !wirelessEnabled -> caps.microphoneCaptureRates
+        else -> caps.rates(AudioQualityProfiles.codec(route, wirelessEnabled, opus), channels)
+    }
+
+    /**
+     * 生成真正写进 /info 的上限。任何一路没有可用组合时退回该路的原始设置，
+     * 而不是让整个配置构造失败：手机自己会再筛一遍。
+     */
+    private fun effectiveAudioQuality(options: QualityOptions): AudioQualitySettings {
+        fun limit(stream: QualityStream): AudioQualityLimit =
+            options.effective(stream, qualityLimit(stream)) ?: qualityLimit(stream)
+        return audioQuality.copy(
+            music = limit(QualityStream.MUSIC),
+            assistant = limit(QualityStream.ASSISTANT),
+            navigation = limit(QualityStream.NAVIGATION),
+            phone = limit(QualityStream.PHONE),
+            microphone = limit(QualityStream.MICROPHONE),
+        )
+    }
+
+    @Composable
+    private fun AudioQualitySettingsContent() {
+        val caps = audioQualityCapabilities
+        val options = remember(caps, audioQuality, wirelessEnabled) { buildQualityOptions() }
+        HelpText(tr("settings.audio.quality.help"))
+        val compatibleAvailable = caps?.compatibleModeAvailable == true
+        SettingsGroup {
+            row {
+                SwitchRow(
+                    title = tr("settings.audio.quality.opus"),
+                    support = tr("settings.audio.quality.opus.support"),
+                    checked = audioQuality.opusEnabled,
+                    // 关闭 Opus 需要本机真的能用 ELD 收和发；打开永远允许。
+                    enabled = !audioQualityChecking && (!audioQuality.opusEnabled || compatibleAvailable),
+                    onCheckedChange = { audioQuality = audioQuality.copy(opusEnabled = it) },
+                )
+            }
+        }
+        // 有线 CarPlay 全部走 LPCM，这条只对无线有意义。
+        if (!audioQualityChecking && wirelessEnabled && !compatibleAvailable) {
+            HelpText(tr("settings.audio.quality.compatibility_unavailable"))
+        }
+        when {
+            audioQualityChecking -> {
+                HelpText(tr("settings.audio.quality.checking"))
+                return
+            }
+            caps == null || caps.failure != null -> {
+                HelpText(tr("settings.audio.quality.check_failed"))
+                (caps?.failure ?: audioQualityProbeFailure)?.let {
+                    HelpText(tr("settings.audio.quality.check_failed_reason", "reason" to it))
+                }
+                TextButton(onClick = { requestAudioQualityProbe(force = true) }) { Text(tr("settings.audio.quality.retry")) }
+                return
+            }
+        }
+        for (stream in QualityStream.entries) {
+            val requested = qualityLimit(stream)
+            val channels = options.channels(stream)
+            val effective = options.effective(stream, requested)
+            val selectedChannels = effective?.channels ?: channels.firstOrNull() ?: requested.channels
+            SectionHeader(tr("settings.audio.quality.${stream.key}"))
+            val rates = options.rates(stream, selectedChannels)
+            SettingsGroup {
+                row {
+                    SelectRow(
+                        title = tr("settings.audio.quality.sample_rate"),
+                        options = rates.map { it to rateLabel(it) },
+                        selected = effective?.sampleRate ?: requested.sampleRate,
+                        support = if (effective == null) tr("settings.audio.quality.unsupported") else null,
+                        enabled = rates.isNotEmpty(),
+                        onSelected = { setQualityLimit(stream, requested.copy(sampleRate = it)) },
+                    )
+                }
+                row {
+                    SelectRow(
+                        title = tr("settings.audio.quality.channels"),
+                        options = channels.map {
+                            it to tr(if (it == 1) "settings.audio.quality.mono" else "settings.audio.quality.stereo")
+                        },
+                        selected = selectedChannels,
+                        enabled = channels.size > 1,
+                        onSelected = { setQualityLimit(stream, requested.copy(channels = it)) },
+                    )
+                }
+            }
+        }
+        SectionHeader(tr("settings.audio.quality.bitrate"))
+        SettingsGroup { row { ListRow(headline = tr("settings.audio.quality.automatic")) } }
+    }
+
+    private fun rateLabel(rate: Int): String =
+        if (rate % 1000 == 0) "${rate / 1000} kHz" else String.format(java.util.Locale.US, "%.1f kHz", rate / 1000.0)
 
     @Composable
     private fun MicrophoneTestRow() {
@@ -4152,7 +4472,10 @@ class CarPlayHostActivity : ComponentActivity() {
         const val CLUSTER_WINDOW_MAX_HEIGHT_FRACTION = 0.35
         const val CLUSTER_WINDOW_MIN_WIDTH_DP = 160
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
-        const val LOG_RENDER_INTERVAL_MILLIS = 100L
+        /** One UI refresh of the handshake list and screen log, however fast records arrive. */
+        const val LOG_FRAME_MILLIS = 200L
+        const val MAIN_STREAM_REVEAL_MAX_WAIT_MILLIS = 1_500L
+        const val STREAM_REVEAL_FADE_MILLIS = 200
         const val IDLE_WORKER_KEEP_ALIVE_SECONDS = 30L
         const val MAX_SCREEN_LOG_LINES = 100
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
@@ -4166,7 +4489,6 @@ class CarPlayHostActivity : ComponentActivity() {
         const val THREE_FINGER_COUNT = 3
         const val THREE_FINGER_SWIPE_DISTANCE_DP = 72
         const val THREE_FINGER_SWIPE_DIRECTION_RATIO = 1.15f
-        const val TIMELINE_RENDER_INTERVAL_MILLIS = 120L
         val TWO_PANE_MIN_WIDTH = 720.dp
         val CATEGORY_PANE_WIDTH = 320.dp
         val NO_VIDEO_BACKGROUND = Color.BLACK
@@ -4177,6 +4499,11 @@ class CarPlayHostActivity : ComponentActivity() {
         val generation: Int,
         val timestampMillis: Long,
         val message: String,
+    )
+    private class PendingRecord(
+        val generation: Int,
+        val timestampMillis: Long,
+        val record: HandshakeTimeline.Prepared,
     )
     private data class HotspotStatus(
         val state: String,

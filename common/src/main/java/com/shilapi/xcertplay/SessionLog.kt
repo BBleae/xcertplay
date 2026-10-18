@@ -30,9 +30,17 @@ internal class SessionLog : Closeable {
     fun appendVideoPacket(
         type: Int, codec: VideoCodec, sequence: Long,
         header: ByteArray, wire: ByteArray, plain: ByteArray?,
+    ) = appendVideoPacket(type, codec, sequence, header, wire, wire.size, plain, plain?.size ?: 0)
+
+    fun appendVideoPacket(
+        type: Int, codec: VideoCodec, sequence: Long,
+        header: ByteArray, wire: ByteArray, wireLength: Int,
+        plain: ByteArray?, plainLength: Int,
     ) {
         if (!videoFramesEnabled) return
-        activeLog?.appendVideoPacket(type, codec.name, sequence, header, wire, plain)
+        activeLog?.appendVideoPacket(
+            type, codec.name, sequence, header, wire, wireLength, plain, plainLength,
+        )
     }
 
     override fun close() {

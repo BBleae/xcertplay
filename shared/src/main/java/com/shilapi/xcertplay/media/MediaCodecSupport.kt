@@ -90,10 +90,10 @@ object MediaCodecSupport {
      * Converts four-byte length prefixes to start codes in place, the common case for every
      * screen frame. Returns false, leaving [buffer] untouched, when it is not well formed.
      */
-    fun toAnnexBInPlace(buffer: ByteArray): Boolean {
-        if (annexBSize(buffer, 4) != buffer.size) return false
+    fun toAnnexBInPlace(buffer: ByteArray, length: Int = buffer.size): Boolean {
+        if (length !in 0..buffer.size || annexBSize(buffer, length, 4) != length) return false
         var cursor = 0
-        while (cursor < buffer.size) {
+        while (cursor < length) {
             val length = readLength(buffer, cursor, 4)
             START_CODE.copyInto(buffer, cursor)
             cursor += 4 + length
@@ -103,14 +103,19 @@ object MediaCodecSupport {
 
     /** Annex B size of a length-prefixed access unit, or -1 when it is malformed. */
     private fun annexBSize(lengthPrefixed: ByteArray, lengthSize: Int): Int {
+        return annexBSize(lengthPrefixed, lengthPrefixed.size, lengthSize)
+    }
+
+    private fun annexBSize(lengthPrefixed: ByteArray, limit: Int, lengthSize: Int): Int {
+        if (limit !in 0..lengthPrefixed.size) return -1
         if (lengthSize != 1 && lengthSize != 2 && lengthSize != 4) return -1
         var cursor = 0
         var size = 0L
-        while (cursor < lengthPrefixed.size) {
-            if (lengthSize > lengthPrefixed.size - cursor) return -1
+        while (cursor < limit) {
+            if (lengthSize > limit - cursor) return -1
             val length = readLength(lengthPrefixed, cursor, lengthSize)
             cursor += lengthSize
-            if (length <= 0 || length > lengthPrefixed.size - cursor) return -1
+            if (length <= 0 || length > limit - cursor) return -1
             size += START_CODE.size + length
             cursor += length
         }
@@ -132,14 +137,22 @@ object MediaCodecSupport {
      */
     fun toLengthPrefixed(bytes: ByteArray): ByteArray {
         if (startCodeSize(bytes, 0) != 0) {
-            val units = annexBNalUnits(bytes)
-            val output = ByteArrayOutputStream(bytes.size + units.size)
-            units.forEach { unit ->
-                output.write(byteArrayOf((unit.size ushr 24).toByte(), (unit.size ushr 16).toByte(),
-                    (unit.size ushr 8).toByte(), unit.size.toByte()))
-                output.write(unit)
+            // One output array sized up front: this runs for every forwarded screen frame.
+            val bounds = annexBUnitBounds(bytes) ?: return ByteArray(0)
+            var size = 0
+            for (index in bounds.indices step 2) size += 4 + bounds[index + 1] - bounds[index]
+            val output = ByteArray(size)
+            var position = 0
+            for (index in bounds.indices step 2) {
+                val length = bounds[index + 1] - bounds[index]
+                output[position] = (length ushr 24).toByte()
+                output[position + 1] = (length ushr 16).toByte()
+                output[position + 2] = (length ushr 8).toByte()
+                output[position + 3] = length.toByte()
+                bytes.copyInto(output, position + 4, bounds[index], bounds[index + 1])
+                position += 4 + length
             }
-            return output.toByteArray()
+            return output
         }
         return if (lengthPrefixedHeaders(bytes).isEmpty()) ByteArray(0) else bytes
     }
@@ -162,25 +175,52 @@ object MediaCodecSupport {
 
     /** Raw NAL units from either three- or four-byte Annex B start codes. */
     fun annexBNalUnits(bytes: ByteArray): List<ByteArray> {
-        if (startCodeSize(bytes, 0) == 0) return emptyList()
-        val units = mutableListOf<ByteArray>()
+        val bounds = annexBUnitBounds(bytes) ?: return emptyList()
+        return (bounds.indices step 2).map { bytes.copyOfRange(bounds[it], bounds[it + 1]) }
+    }
+
+    /** The first two bytes (NAL header) of every unit in an Annex B access unit; no payload copies. */
+    fun annexBNalHeaders(bytes: ByteArray): List<ByteArray> {
+        return annexBNalHeaders(bytes, bytes.size)
+    }
+
+    fun annexBNalHeaders(bytes: ByteArray, length: Int): List<ByteArray> {
+        val bounds = annexBUnitBounds(bytes, length) ?: return emptyList()
+        return (bounds.indices step 2).map { bytes.copyOfRange(bounds[it], minOf(bounds[it] + 2, bounds[it + 1])) }
+    }
+
+    /** Start and end offsets of each Annex B NAL unit, flattened, or null when malformed. */
+    private fun annexBUnitBounds(bytes: ByteArray): IntArray? {
+        return annexBUnitBounds(bytes, bytes.size)
+    }
+
+    private fun annexBUnitBounds(bytes: ByteArray, length: Int): IntArray? {
+        if (length !in 1..bytes.size || startCodeSize(bytes, 0, length) == 0) return null
+        var bounds = IntArray(8)
+        var count = 0
         var cursor = 0
-        while (cursor < bytes.size) {
-            val prefix = startCodeSize(bytes, cursor)
-            if (prefix == 0) return emptyList()
+        while (cursor < length) {
+            val prefix = startCodeSize(bytes, cursor, length)
+            if (prefix == 0) return null
             val start = cursor + prefix
             cursor = start
-            while (cursor < bytes.size && startCodeSize(bytes, cursor) == 0) cursor++
-            if (cursor == start) return emptyList()
-            units.add(bytes.copyOfRange(start, cursor))
+            while (cursor < length && startCodeSize(bytes, cursor, length) == 0) cursor++
+            if (cursor == start) return null
+            if (count + 2 > bounds.size) bounds = bounds.copyOf(bounds.size * 2)
+            bounds[count++] = start
+            bounds[count++] = cursor
         }
-        return units
+        return bounds.copyOf(count)
     }
 
     private fun startCodeSize(bytes: ByteArray, offset: Int): Int {
-        if (offset + 3 > bytes.size || bytes[offset] != 0.toByte() || bytes[offset + 1] != 0.toByte()) return 0
+        return startCodeSize(bytes, offset, bytes.size)
+    }
+
+    private fun startCodeSize(bytes: ByteArray, offset: Int, limit: Int): Int {
+        if (offset + 3 > limit || bytes[offset] != 0.toByte() || bytes[offset + 1] != 0.toByte()) return 0
         if (bytes[offset + 2] == 1.toByte()) return 3
-        return if (offset + 4 <= bytes.size && bytes[offset + 2] == 0.toByte() && bytes[offset + 3] == 1.toByte()) 4 else 0
+        return if (offset + 4 <= limit && bytes[offset + 2] == 0.toByte() && bytes[offset + 3] == 1.toByte()) 4 else 0
     }
 
     /** Wraps one raw AAC-LC access unit in an MPEG-4 ADTS frame. */

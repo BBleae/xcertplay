@@ -82,6 +82,12 @@ internal class SessionLogFile(
     fun appendVideoPacket(
         type: Int, codec: String, sequence: Long,
         header: ByteArray, wire: ByteArray, plain: ByteArray?,
+    ) = appendVideoPacket(type, codec, sequence, header, wire, wire.size, plain, plain?.size ?: 0)
+
+    fun appendVideoPacket(
+        type: Int, codec: String, sequence: Long,
+        header: ByteArray, wire: ByteArray, wireLength: Int,
+        plain: ByteArray?, plainLength: Int,
     ) {
         if (!lock.tryLock()) {
             droppedVideoPackets.incrementAndGet()
@@ -89,8 +95,11 @@ internal class SessionLogFile(
         }
         try {
             if (closed) return
+            require(wireLength in 0..wire.size)
+            require(plainLength in 0..(plain?.size ?: 0))
             val payload = plain?.takeUnless { it === wire }
-            val size = header.size.toLong() + wire.size + (payload?.size ?: 0)
+            val payloadLength = if (payload == null) 0 else plainLength
+            val size = header.size.toLong() + wireLength + payloadLength
             val recordBudget = maxBytes - headLimitBytes - RETENTION_MARKER_RESERVE - TRUNCATION_MARKER_RESERVE - 1024
             if (size > MAX_PENDING_VIDEO_BYTES || size * 2 > recordBudget ||
                 writerExecutor.queue.remainingCapacity() < 8 || !videoPending.compareAndSet(false, true)) {
@@ -98,8 +107,8 @@ internal class SessionLogFile(
                 return
             }
             val capturedHeader = header.copyOf()
-            val capturedWire = wire.copyOf()
-            val capturedPlain = payload?.copyOf()
+            val capturedWire = wire.copyOf(wireLength)
+            val capturedPlain = payload?.copyOf(payloadLength)
             val at = System.currentTimeMillis()
             writerExecutor.execute {
                 try {

@@ -159,11 +159,17 @@ object CarPlayWebDisplayFactory {
             if (target != null) { previews[type] = target; sink.setSurface(type, target) }
         }
 
+        /** A replaced view's late destroy callback must not take the preview from its successor. */
+        @Synchronized fun releasePreview(type: Int, surface: Surface) {
+            if (previews[type] === surface) preview(type, null)
+        }
+
         /** A closed session's late media must not reach the next session's pages. */
         private fun channel(type: Int) = if (closed.get()) null else displays[type]
 
         override fun forwardsVideo(type: Int) = displays.containsKey(type)
         override fun onVideoConfig(type: Int, codec: VideoCodec, codecData: ByteArray) { channel(type)?.config(codec, codecData) }
+        override fun wantsVideoFrames(type: Int) = channel(type)?.hasViewer == true
         override fun onVideoFrame(type: Int, accessUnit: ByteArray, arrivalUs: Long) { channel(type)?.frame(accessUnit, arrivalUs) }
         override fun onVideoActive(type: Int, active: Boolean) { channel(type)?.setActive(active) }
         override fun takesAudio() = channel(MAIN)?.hasViewer == true

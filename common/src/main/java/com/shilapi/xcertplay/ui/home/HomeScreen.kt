@@ -1,12 +1,8 @@
 package com.shilapi.xcertplay.ui.home
 
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -34,6 +31,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,9 +57,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -82,6 +80,9 @@ import com.shilapi.xcertplay.ui.components.LvIcon
 import com.shilapi.xcertplay.ui.components.LvIconButton
 import com.shilapi.xcertplay.ui.components.PillKind
 import com.shilapi.xcertplay.ui.components.SmallTopBar
+import com.shilapi.xcertplay.ui.components.IconVectors
+import com.shilapi.xcertplay.ui.components.LoopLayer
+import com.shilapi.xcertplay.ui.components.RenderThreadLoop
 import com.shilapi.xcertplay.ui.components.StateGlyph
 import com.shilapi.xcertplay.ui.components.StatusPill
 import com.shilapi.xcertplay.ui.components.tabular
@@ -200,8 +201,9 @@ private fun HeroCard(
         else -> timeline.currentAwaiting()?.second?.text ?: status
     }
 
+    // No size animation: each animated frame re-measured the log list below the card.
     Surface(
-        modifier = modifier.animateContentSize(),
+        modifier = modifier,
         shape = RoundedCornerShape(Radius.xl),
         color = scheme.primaryContainer,
         contentColor = scheme.onPrimaryContainer,
@@ -228,16 +230,17 @@ private fun HeroCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (subtitle.isNotEmpty()) {
-                        Text(
-                            subtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = scheme.onPrimaryContainer.copy(alpha = 0.8f),
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = Space.s1),
-                        )
-                    }
+                    // Always two lines tall: a subtitle wrapping between one and two lines resized the
+                    // card, and with it re-measured the log list below, on every status update.
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = scheme.onPrimaryContainer.copy(alpha = 0.8f),
+                        minLines = 2,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = Space.s1),
+                    )
                 }
             }
 
@@ -317,16 +320,20 @@ private fun PhaseTrack(timeline: HandshakeTimeline, revision: Int) {
 @Composable
 private fun PhaseNode(kind: PhaseKind, state: State, failed: Boolean, size: Dp, label: String) {
     val scheme = MaterialTheme.colorScheme
-    val pulse = if (state == State.ACTIVE && !failed) {
-        val transition = rememberInfiniteTransition(label = "phase")
-        transition.animateFloat(
-            initialValue = 0.9f,
-            targetValue = 1.06f,
-            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-            label = "pulse",
-        ).value
-    } else {
-        1f
+    if (state == State.ACTIVE && !failed) {
+        // Fill and ring breathe on the RenderThread, independent of main-thread composition.
+        Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+            RenderThreadLoop(
+                listOf(
+                    LoopLayer(R.drawable.avd_phase_pulse_disc, scheme.surfaceContainerLowest),
+                    LoopLayer(R.drawable.avd_phase_pulse_ring, scheme.primary),
+                ),
+                // Larger than the node and centred: a view clips its drawing, a layer scale did not.
+                Modifier.requiredSize(size * PULSE_PEAK),
+            )
+            LvIcon(phaseIcon(kind), tint = scheme.primary, size = size * 0.56f, description = label)
+        }
+        return
     }
     val (container, content, ring) = when (state) {
         State.DONE -> Triple(scheme.primary, scheme.onPrimary, Color.Transparent)
@@ -338,7 +345,6 @@ private fun PhaseNode(kind: PhaseKind, state: State, failed: Boolean, size: Dp, 
     Box(
         Modifier
             .size(size)
-            .scale(pulse)
             .clip(CircleShape)
             .background(container)
             .border(if (ring == Color.Transparent) 0.dp else 2.dp, ring, CircleShape),
@@ -478,18 +484,35 @@ private fun ExchangeList(timeline: HandshakeTimeline?, revision: Int, modifier: 
     val listState = rememberLazyListState()
     FollowLatest(listState, revision, items.size)
     LazyColumn(modifier, state = listState) {
+        // Rows get only what they show, so a new record recomposes the rows it changed, not all of them.
         for (entry in items) {
             item(key = entry.key) {
                 when (entry) {
-                    is ExchangeItem.Header -> GroupHeader(
-                        timeline, entry.group, entry.expanded, revision,
-                        onToggle = { groupChoice[entry.index] = !entry.expanded },
-                    )
-                    is ExchangeItem.Entry -> ExchangeRow(
-                        entry.row, revision,
-                        open = rowOpen[entry.row.id] == true,
-                        onToggle = { rowOpen[entry.row.id] = rowOpen[entry.row.id] != true },
-                    )
+                    is ExchangeItem.Header -> {
+                        val group = entry.group
+                        val index = entry.index
+                        val expanded = entry.expanded
+                        GroupHeader(
+                            title = group.title,
+                            tag = group.tag,
+                            state = if (timeline.failure != null && group.state == State.ACTIVE) State.SKIPPED else group.state,
+                            durationMillis = if (group.state == State.DONE && group.endedAtMillis > 0) {
+                                group.endedAtMillis - group.startedAtMillis
+                            } else {
+                                null
+                            },
+                            expanded = expanded,
+                            onToggle = { groupChoice[index] = !expanded },
+                        )
+                    }
+                    is ExchangeItem.Entry -> {
+                        val id = entry.row.id
+                        ExchangeRow(
+                            entry.row, entry.row.revision,
+                            open = rowOpen[id] == true,
+                            onToggle = { rowOpen[id] = rowOpen[id] != true },
+                        )
+                    }
                 }
             }
         }
@@ -497,10 +520,43 @@ private fun ExchangeList(timeline: HandshakeTimeline?, revision: Int, modifier: 
     }
 }
 
+private const val PULSE_PEAK = 1.06f
+
+/** Every icon the home screen can show, for [IconVectors.preload]. */
+val HOME_SCREEN_ICONS = intArrayOf(
+    R.drawable.ic_ms_airplay,
+    R.drawable.ic_ms_arrow_back,
+    R.drawable.ic_ms_arrow_forward,
+    R.drawable.ic_ms_bluetooth,
+    R.drawable.ic_ms_cancel_fill,
+    R.drawable.ic_ms_cell_tower,
+    R.drawable.ic_ms_check,
+    R.drawable.ic_ms_check_circle_fill,
+    R.drawable.ic_ms_close,
+    R.drawable.ic_ms_error_fill,
+    R.drawable.ic_ms_expand_more,
+    R.drawable.ic_ms_fiber_manual_record,
+    R.drawable.ic_ms_hourglass_empty,
+    R.drawable.ic_ms_key,
+    R.drawable.ic_ms_lan,
+    R.drawable.ic_ms_layers,
+    R.drawable.ic_ms_link,
+    R.drawable.ic_ms_lock,
+    R.drawable.ic_ms_play_circle,
+    R.drawable.ic_ms_receipt_long,
+    R.drawable.ic_ms_replay,
+    R.drawable.ic_ms_settings,
+    R.drawable.ic_ms_sync_alt,
+    R.drawable.ic_ms_usb,
+    R.drawable.ic_ms_verified_user,
+    R.drawable.ic_ms_wifi,
+)
+
 /** Keeps the newest entry in view unless the reader scrolled away from the bottom. */
 @Composable
 private fun FollowLatest(state: LazyListState, revision: Int, count: Int) {
     var follow by remember { mutableStateOf(true) }
+    val autoScrolling = remember { booleanArrayOf(false) }
     val atBottom by remember(state) {
         derivedStateOf {
             val info = state.layoutInfo
@@ -509,25 +565,53 @@ private fun FollowLatest(state: LazyListState, revision: Int, count: Int) {
         }
     }
     LaunchedEffect(state.isScrollInProgress) {
-        if (!state.isScrollInProgress) follow = atBottom
+        if (!state.isScrollInProgress && !autoScrolling[0]) follow = atBottom
     }
+    // New rows land below the viewport, so the list first holds its place and then slides
+    // down; the slide is shorter than one log frame, so it never queues behind the next.
     LaunchedEffect(revision, count) {
-        if (follow && count > 0) state.animateScrollToItem(count)
+        if (!follow || count <= 0) return@LaunchedEffect
+        autoScrolling[0] = true
+        try {
+            var distance = distanceToEnd(state)
+            // Every row the slide passes through is composed, so a large backlog jumps to
+            // within half a viewport first and only the rest is animated.
+            val maxSlide = state.layoutInfo.viewportSize.height * 0.5f
+            if (distance > maxSlide) {
+                state.scrollBy(distance - maxSlide)
+                distance = maxSlide
+            }
+            if (distance > 0f) state.animateScrollBy(distance, tween(FOLLOW_SLIDE_MILLIS, easing = FastOutSlowInEasing))
+            state.scrollToItem(count)
+        } finally {
+            autoScrolling[0] = false
+        }
     }
+}
+
+private const val FOLLOW_SLIDE_MILLIS = 180
+
+/** Pixels left to the end of the list; rows not laid out yet are taken at the visible average. */
+private fun distanceToEnd(state: LazyListState): Float {
+    val info = state.layoutInfo
+    val visible = info.visibleItemsInfo
+    val last = visible.lastOrNull() ?: return 0f
+    val average = visible.sumOf { it.size }.toFloat() / visible.size
+    val hidden = info.totalItemsCount - 1 - last.index
+    return (last.offset + last.size - info.viewportEndOffset + info.afterContentPadding) + hidden * average
 }
 
 @Composable
 private fun GroupHeader(
-    timeline: HandshakeTimeline,
-    group: HandshakeTimeline.Group,
+    title: String,
+    tag: String?,
+    state: State,
+    durationMillis: Long?,
     expanded: Boolean,
-    revision: Int,
     onToggle: () -> Unit,
 ) {
-    @Suppress("UNUSED_VARIABLE") val tick = revision
     val scheme = MaterialTheme.colorScheme
     val rotation by animateFloatAsState(if (expanded) 0f else -90f, tween(150), label = "chevron")
-    val state = if (timeline.failure != null && group.state == State.ACTIVE) State.SKIPPED else group.state
     Row(
         Modifier
             .fillMaxWidth()
@@ -539,17 +623,17 @@ private fun GroupHeader(
     ) {
         StateGlyph(glyphOf(state), size = 18.dp)
         Text(
-            group.title,
+            title,
             style = MaterialTheme.typography.titleSmall,
             color = scheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        tagIcon(group.tag)?.let { LvIcon(it, tint = scheme.onSurfaceVariant, size = 16.dp) }
-        if (group.state == State.DONE && group.endedAtMillis > 0) {
+        tagIcon(tag)?.let { LvIcon(it, tint = scheme.onSurfaceVariant, size = 16.dp) }
+        if (durationMillis != null) {
             Text(
-                duration(group.endedAtMillis - group.startedAtMillis),
+                duration(durationMillis),
                 style = LavenderCode.medium,
                 color = scheme.onSurfaceVariant,
             )
@@ -558,7 +642,7 @@ private fun GroupHeader(
             R.drawable.ic_ms_expand_more,
             tint = scheme.onSurfaceVariant,
             size = 20.dp,
-            modifier = Modifier.rotate(rotation),
+            modifier = Modifier.graphicsLayer { rotationZ = rotation },
             description = if (expanded) tr("home.log.collapse") else tr("home.log.expand"),
         )
     }
@@ -566,8 +650,9 @@ private fun GroupHeader(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ExchangeRow(row: HandshakeTimeline.Row, revision: Int, open: Boolean, onToggle: () -> Unit) {
-    @Suppress("UNUSED_VARIABLE") val tick = revision + row.revision
+private fun ExchangeRow(row: HandshakeTimeline.Row, rowRevision: Int, open: Boolean, onToggle: () -> Unit) {
+    // [row] is mutated in place; [rowRevision] is what tells Compose this row changed.
+    @Suppress("UNUSED_VARIABLE") val tick = rowRevision
     val scheme = MaterialTheme.colorScheme
     val ext = Lavender.extended
     val detail = row.detail
@@ -609,7 +694,7 @@ private fun ExchangeRow(row: HandshakeTimeline.Row, revision: Int, open: Boolean
                 )
                 if (detail != null) {
                     val rotation by animateFloatAsState(if (open) 0f else -90f, tween(150), label = "detail")
-                    LvIcon(R.drawable.ic_ms_expand_more, tint = scheme.onSurfaceVariant, size = 18.dp, modifier = Modifier.rotate(rotation))
+                    LvIcon(R.drawable.ic_ms_expand_more, tint = scheme.onSurfaceVariant, size = 18.dp, modifier = Modifier.graphicsLayer { rotationZ = rotation })
                 }
             }
             if (row.direction != Direction.LOCAL && row.meaning != row.name) {

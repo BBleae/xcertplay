@@ -13,6 +13,9 @@ interface MediaTap {
     /** [codecData] is the phone's avcC/hvcC record. */
     fun onVideoConfig(type: Int, codec: VideoCodec, codecData: ByteArray) {}
 
+    /** False while nobody watches [type]: its frames are then not converted for [onVideoFrame]. */
+    fun wantsVideoFrames(type: Int): Boolean = true
+
     /** One complete access unit with four-byte NAL length prefixes. */
     fun onVideoFrame(type: Int, accessUnit: ByteArray, arrivalUs: Long) {}
 

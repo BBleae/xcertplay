@@ -15,7 +15,7 @@ interface MediaSink {
     fun onVideoCodec(type: Int, codec: VideoCodec) {}
     fun onVideoRecoveryHandler(type: Int, requestKeyFrame: (() -> Boolean)?) {}
     fun onVideoConfig(type: Int, codecData: ByteArray) {}
-    fun onVideoFrame(type: Int, naluBytes: ByteArray) {}
+    fun onVideoFrame(type: Int, accessUnit: VideoAccessUnit) { accessUnit.close() }
     fun onScreenStreamActive(type: Int, active: Boolean) {}
     fun onAudioStarted(type: Int, format: AudioFormat, firstSample: Int) {}
     fun onAudioRtp(type: Int, format: AudioFormat, rtp: ByteArray, sample: Int) {}
@@ -34,7 +34,7 @@ class CarPlayMediaEngine(
     private val sink: MediaSink,
     private val microphoneEnabled: Boolean = false,
     private val audioCaptureDirectory: File? = null,
-    private val videoPacketLog: ((Int, VideoCodec, Long, ByteArray, ByteArray, ByteArray?) -> Unit)? = null,
+    private val videoPacketLog: ((Int, VideoCodec, Long, ByteArray, ByteArray, Int, ByteArray?, Int) -> Unit)? = null,
 ) : AirPlayMediaHandler {
     internal data class StreamKey(
         val session: AirPlaySession,
@@ -74,12 +74,13 @@ class CarPlayMediaEngine(
         val screen = ScreenStream(key)
         var streamCodec = VideoCodec.H264
         var firstFrameLogged = false
-        // The no-display-UUID forceKeyFrame command targets the primary screen.
-        // Do not accidentally restart the main screen when the alternate decoder loses sync.
-        if (type == STREAM_TYPE_MAIN_SCREEN) {
-            sink.onVideoRecoveryHandler(type) {
-                session.sendCommand(mainScreenKeyFrameCommand())
-            }
+        // The no-display-UUID forceKeyFrame command targets the primary screen; any other
+        // screen is addressed by the uuid its SETUP carried, or not asked at all, so the
+        // alternate decoder losing sync never restarts the main screen.
+        val keyFrameCommand = if (type == STREAM_TYPE_MAIN_SCREEN) mainScreenKeyFrameCommand()
+        else (stream["uuid"] as? String)?.takeIf { it.isNotEmpty() }?.let(::screenKeyFrameCommand)
+        if (keyFrameCommand != null) {
+            sink.onVideoRecoveryHandler(type) { session.sendCommand(keyFrameCommand) }
         }
         val port = screen.listen(
             object : ScreenStream.Listener {
@@ -87,19 +88,24 @@ class CarPlayMediaEngine(
                     streamCodec = codec
                     sink.onVideoCodec(type, codec)
                 }
-                override fun onPacket(sequence: Long, header: ByteArray, wire: ByteArray, plain: ByteArray?) {
-                    videoPacketLog?.invoke(type, streamCodec, sequence, header, wire, plain)
+                override fun onPacket(
+                    sequence: Long, header: ByteArray, wire: ByteArray, wireLength: Int,
+                    plain: ByteArray?, plainLength: Int,
+                ) {
+                    videoPacketLog?.invoke(
+                        type, streamCodec, sequence, header, wire, wireLength, plain, plainLength,
+                    )
                 }
                 override fun onConfig(codecData: ByteArray) {
                     session.logDebug("airplay screen config type=$type codec=$streamCodec bytes=${codecData.size}")
                     sink.onVideoConfig(type, codecData)
                 }
-                override fun onFrame(naluBytes: ByteArray) {
+                override fun onFrame(accessUnit: VideoAccessUnit) {
                     if (!firstFrameLogged) {
                         firstFrameLogged = true
-                        session.logDebug("airplay screen first frame type=$type codec=$streamCodec bytes=${naluBytes.size}")
+                        session.logDebug("airplay screen first frame type=$type codec=$streamCodec bytes=${accessUnit.size}")
                     }
-                    sink.onVideoFrame(type, naluBytes)
+                    sink.onVideoFrame(type, accessUnit)
                 }
                 override fun onClosed(cause: Throwable?) {
                     Log.w(
@@ -133,7 +139,7 @@ class CarPlayMediaEngine(
             (stream["audioFormat"] as? Number)?.toLong() ?: 0L,
             type,
             audioType,
-        )
+        ).copy(framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt()?.takeIf { it > 0 })
         Log.i(
             TAG,
             "airplay audio format type=$type audioType=$audioType codec=${format.codec} " +
@@ -371,7 +377,22 @@ class CarPlayMediaEngine(
         } else {
             format.sampleRate
         }
+        // 采集固定 16 kHz，速率由 PcmMonoResampler 变换到手机协商的速率，不再拒绝高速率；
+        // 只有 AAC-ELD 编码器是单声道的，LPCM 的多声道由 expandMonoPcm 复制。
+        if (format.codec == AudioCodecKind.AAC_ELD && format.channels != 1) {
+            Log.w(TAG, "microphone AAC-ELD requires mono, requested channels=${format.channels}")
+            return null
+        }
         val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0
+        val eldFrames = if (format.codec == AudioCodecKind.AAC_ELD) {
+            val samples = framesPerPacket.takeIf { it > 0 }
+                ?: com.shilapi.xcertplay.media.AacEldFormat.DEFAULT_FRAMES_PER_PACKET
+            if (samples != 480 && samples != 512) {
+                Log.w(TAG, "unsupported AAC-ELD framesPerPacket=$samples")
+                return null
+            }
+            samples
+        } else null
         val frameMillis = if (format.codec == AudioCodecKind.OPUS) {
             20
         } else if (framesPerPacket > 0) {
@@ -390,7 +411,12 @@ class CarPlayMediaEngine(
             port = port,
             key = key,
             codec = format.codec,
-            bitrate = if (format.codec == AudioCodecKind.OPUS) opusBitrate else null,
+            bitrate = when (format.codec) {
+                AudioCodecKind.OPUS -> opusBitrate
+                AudioCodecKind.AAC_ELD -> 48_000
+                else -> null
+            },
+            framesPerPacket = eldFrames ?: framesPerPacket.takeIf { it > 0 && format.codec != AudioCodecKind.OPUS },
         )
     }
 
@@ -453,3 +479,10 @@ internal fun unsignedPlistInteger(value: Any?): Any = when (value) {
 /** AirPlaySender carEndpoint_forceKeyFrame defaults to the primary stream with empty params. */
 internal fun mainScreenKeyFrameCommand(): Map<String, Any?> =
     linkedMapOf("type" to "forceKeyFrame", "params" to emptyMap<String, Any?>())
+
+/**
+ * AirPlaySender reads params["uuid"] as a CFString (0x25154d538) and, when non-empty, restarts
+ * the bitstream of carEndpoint_getScreenStreamForDisplayUUID instead of the primary stream.
+ */
+internal fun screenKeyFrameCommand(displayUuid: String): Map<String, Any?> =
+    linkedMapOf("type" to "forceKeyFrame", "params" to linkedMapOf("uuid" to displayUuid))

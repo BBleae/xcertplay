@@ -1,12 +1,7 @@
 package com.shilapi.xcertplay.ui.components
 
+import android.content.res.Resources
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -60,11 +55,11 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +75,7 @@ import com.shilapi.xcertplay.ui.theme.Lavender
 import com.shilapi.xcertplay.ui.theme.LavenderCode
 import com.shilapi.xcertplay.ui.theme.Radius
 import com.shilapi.xcertplay.ui.theme.Space
+import java.util.concurrent.ConcurrentHashMap
 
 // ---------------------------------------------------------------------------------------------
 // Icons
@@ -95,11 +91,26 @@ fun LvIcon(
     description: String? = null,
 ) {
     Icon(
-        painter = painterResource(icon),
+        imageVector = IconVectors.get(LocalResources.current, icon),
         contentDescription = description,
         tint = tint,
         modifier = modifier.size(size),
     )
+}
+
+/**
+ * Vector icons parsed once per process. painterResource parses the XML during the first
+ * composition that shows an icon, on the main thread; [preload] does it on a worker instead.
+ */
+object IconVectors {
+    private val cache = ConcurrentHashMap<Int, ImageVector>()
+
+    fun get(resources: Resources, @DrawableRes id: Int): ImageVector =
+        cache.getOrPut(id) { ImageVector.vectorResource(null, resources, id) }
+
+    fun preload(resources: Resources, @DrawableRes ids: IntArray) {
+        Thread({ ids.forEach { get(resources, it) } }, "icon-preload").start()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -148,27 +159,18 @@ fun StateGlyph(state: GlyphState, modifier: Modifier = Modifier, size: Dp = 24.d
     val scheme = MaterialTheme.colorScheme
     when (state) {
         GlyphState.ACTIVE -> {
-            val transition = rememberInfiniteTransition(label = "glyph")
-            val angle by transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 360f,
-                animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
-                label = "spin",
-            )
             val track = scheme.secondaryContainer
-            val arc = scheme.primary
-            Canvas(modifier.size(size)) {
-                val stroke = (this.size.minDimension * 0.14f).coerceAtLeast(2.dp.toPx())
-                val inset = stroke / 2 + 1.dp.toPx()
-                val arcSize = androidx.compose.ui.geometry.Size(
-                    this.size.width - inset * 2,
-                    this.size.height - inset * 2,
-                )
-                drawArc(track, 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(stroke))
-                drawArc(
-                    arc, angle - 90f, 100f, false, Offset(inset, inset), arcSize,
-                    style = Stroke(stroke, cap = StrokeCap.Round),
-                )
+            // The track is static; the arc spins on the RenderThread, so it keeps turning while
+            // the main thread composes a burst of handshake rows. Geometry matches avd_glyph_spin.
+            Box(modifier.size(size)) {
+                Canvas(Modifier.matchParentSize()) {
+                    drawCircle(
+                        track,
+                        radius = this.size.minDimension * (9.4f / 24f),
+                        style = Stroke(this.size.minDimension * 0.14f),
+                    )
+                }
+                RenderThreadLoop(listOf(LoopLayer(R.drawable.avd_glyph_spin, scheme.primary)), Modifier.matchParentSize())
             }
         }
         GlyphState.DONE -> FilledGlyph(R.drawable.ic_ms_check, scheme.primary, scheme.onPrimary, size, modifier)

@@ -277,6 +277,20 @@ class CarPlayWebDisplayTest {
         } finally { server.stop() }
     }
 
+    @Test fun aPkcs12IdentityIsCarriedOverToTheDerFile() {
+        val dir = Files.createTempDirectory("tls").toFile()
+        val now = 1_800_000_000_000L
+        val legacy = WebDisplayCertificate.identity(File(dir, "seed.p12"), listOf("192.168.1.5"), now)
+        val file = File(dir, "web.p12")
+        file.outputStream().use { legacy.store(it, "xcertplay".toCharArray()) }
+        val migrated = WebDisplayCertificate.identity(file, listOf("192.168.1.5"), now)
+        assertEquals(WebDisplayCertificate.certificate(legacy), WebDisplayCertificate.certificate(migrated))
+        assertTrue(File(dir, "web.der").isFile)
+        file.writeBytes(byteArrayOf(1, 2, 3))
+        assertEquals("later loads read only the DER file", WebDisplayCertificate.certificate(legacy),
+            WebDisplayCertificate.certificate(WebDisplayCertificate.identity(file, listOf("192.168.1.5"), now)))
+    }
+
     @Test fun theCertificateIsReusedUntilAnAddressOrExpiryNeedsANewOne() {
         val file = File(Files.createTempDirectory("tls").toFile(), "web.p12")
         val now = 1_800_000_000_000L

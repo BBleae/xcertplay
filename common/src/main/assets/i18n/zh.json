@@ -1,14 +1,11 @@
 {
   "_comment": "Optional Simplified Chinese overlay. Missing keys fall back to en.json; {name} marks a placeholder.",
   "_language": "zh-CN",
-
   "app.name": "xcertplay",
-
   "common.back": "返回",
   "common.cancel": "取消",
   "common.choose": "选择",
   "common.save": "保存",
-
   "home.open_settings": "打开设置",
   "home.starting": "启动中",
   "home.connected": "已连接",
@@ -33,7 +30,6 @@
   "home.log.to_phone": "已发送至 iPhone",
   "home.log.from_phone": "已接收自 iPhone",
   "home.log.local": "本地步骤",
-
   "link.state.off": "关闭",
   "link.state.listening": "监听中",
   "link.state.connecting": "连接中",
@@ -41,7 +37,6 @@
   "link.state.encrypted": "已加密",
   "link.state.released": "已释放",
   "link.state.failed": "失败",
-
   "phase.mfi.title": "准备 MFi 认证",
   "phase.hotspot.title": "启动 Wi-Fi 热点",
   "phase.advertise.title": "广播 AirPlay 服务",
@@ -55,12 +50,10 @@
   "phase.session.title": "启动 AirPlay 会话",
   "phase.streams.title": "打开媒体流",
   "phase.handoff.title": "切换到 Wi-Fi",
-
   "settings.title": "设置",
   "settings.discard": "放弃更改并关闭",
   "settings.save": "保存并重新连接",
   "settings.exit": "退出应用",
-
   "settings.category.connection": "连接",
   "settings.category.connection.summary": "MFi 目标、无线 CarPlay、热点",
   "settings.category.vehicle": "车辆数据",
@@ -77,7 +70,6 @@
   "settings.category.window.summary": "开机自启、系统栏、手势",
   "settings.category.diagnostics": "诊断",
   "settings.category.diagnostics.summary": "日志、延迟监视、抓取",
-
   "settings.connection.mfi": "MFi 认证",
   "settings.connection.transport": "传输方式",
   "settings.mfi.target": "证书与签名目标",
@@ -115,7 +107,6 @@
   "settings.manual_hotspot.password": "热点密码",
   "settings.manual_hotspot.error_title": "热点设置需要处理",
   "settings.hotspot_status": "热点状态",
-
   "hotspot.state.off": "无线已关闭",
   "hotspot.state.stopped": "已停止",
   "hotspot.state.starting": "启动中",
@@ -131,7 +122,6 @@
   "hotspot.band": "频段",
   "hotspot.channel": "信道",
   "hotspot.off_help": "打开无线 CarPlay 以启动热点。",
-
   "settings.vehicle.location": "位置",
   "settings.vehicle.report_location": "向 iPhone 上报位置",
   "settings.vehicle.report_location.support": "iPhone 请求时，将 Android 的精确位置作为 CarPlay GPS 数据发送",
@@ -147,7 +137,6 @@
   "settings.vehicle.grant_speed": "授予车速访问权限",
   "settings.vehicle.no_adapter": "本应用没有经过验证的适配器可将车内温度、告警、空调、车门、车窗和胎压回传给手机，这些车辆属性不会被发送。",
   "settings.vehicle.requirements": "GPS 需要精确位置权限。车辆功能需要可读的车辆属性；不可用或过期的读数将被省略。仅在 iPhone 订阅后才会发送更新。",
-
   "settings.audio.playback": "播放",
   "settings.audio.buffer": "主媒体缓冲",
   "settings.audio.buffer.support": "值越大越能吸收网络抖动，但会增加延迟",
@@ -164,7 +153,27 @@
   "settings.audio.listening": "正在监听……",
   "settings.audio.permission_required": "需要权限",
   "settings.audio.test_failed": "测试失败",
-
+  "settings.audio.quality": "音频质量设置",
+  "settings.audio.quality.summary": "语音音质、采样率和声道",
+  "settings.audio.quality.help": "这里设置的是向 CarPlay 暴露的最高参数，不是最终协商结果——实际格式由 iPhone 决定。数值为本机可播放/解码的能力，系统可能会重采样。更改在保存并重新连接后生效。",
+  "settings.audio.quality.opus": "启用 Opus",
+  "settings.audio.quality.opus.support": "推荐开启，无线 CarPlay 下语音音质更好。关闭后改用兼容编码，仅在本机支持时可选。",
+  "settings.audio.quality.compatibility_unavailable": "本机用不了 Opus 的替代编码，关闭 Opus 后无线 CarPlay 会没有声音。",
+  "settings.audio.quality.checking": "正在检测本机音频支持情况……",
+  "settings.audio.quality.check_failed": "没能检测出本机的音频支持情况，暂时无法显示可选参数。",
+  "settings.audio.quality.retry": "重新检测",
+  "settings.audio.quality.music": "音乐",
+  "settings.audio.quality.assistant": "语音助手",
+  "settings.audio.quality.navigation": "导航与提示音",
+  "settings.audio.quality.phone": "电话",
+  "settings.audio.quality.microphone": "麦克风",
+  "settings.audio.quality.sample_rate": "最高采样率",
+  "settings.audio.quality.channels": "最多声道",
+  "settings.audio.quality.mono": "单声道（Mono）",
+  "settings.audio.quality.stereo": "立体声（Stereo）",
+  "settings.audio.quality.unsupported": "本机没有可用的参数组合，请改用其他设置。",
+  "settings.audio.quality.bitrate": "码率",
+  "settings.audio.quality.automatic": "由 iPhone 自动选择",
   "settings.display.resolution": "分辨率",
   "settings.display.scale": "分辨率缩放",
   "settings.display.scale.support": "发送到 iPhone 的屏幕像素比例",
@@ -184,14 +193,12 @@
   "settings.display.safe_area.reset": "重置",
   "settings.display.safe_area.draw_outside": "允许绘制到安全区域外",
   "settings.display.safe_area.draw_outside.support": "让 CarPlay 壁纸铺满区域之外",
-
   "safe_area.waiting": "等待显示尺寸",
   "safe_area.full": "全屏 {width} × {height}",
   "safe_area.custom": "{width} × {height} 中的 ({left}, {top})，尺寸 {rect_width} × {rect_height}",
   "safe_area.unavailable": "显示尺寸就绪后可用",
   "safe_area.editor.title": "安全区域",
   "safe_area.editor.help": "拖动四条边到屏幕可用区域",
-
   "settings.web.main": "主屏",
   "settings.web.instrument": "仪表屏",
   "settings.web.enabled": "在浏览器中打开",
@@ -206,7 +213,6 @@
   "settings.web.no_network": "连接本地网络以获取地址",
   "settings.web.https_note": "网页显示使用自签名证书的 HTTPS，以便浏览器通过 WebCodecs 解码（包含 H.265）。每个浏览器只会警告一次，选择继续即可。",
   "settings.web.apply_note": "更改在保存并重新连接后生效。",
-
   "settings.identity.vehicle": "车辆标识",
   "settings.identity.manufacturer": "厂商",
   "settings.identity.model": "型号",
@@ -220,7 +226,6 @@
   "settings.identity.driving_side": "驾驶侧",
   "settings.identity.driving_side.left": "左舵",
   "settings.identity.driving_side.right": "右舵",
-
   "settings.window.startup": "启动",
   "settings.window.auto_start": "开机自启",
   "settings.window.auto_start.support": "设备启动后自动打开 CarPlay",
@@ -233,7 +238,6 @@
   "settings.window.edge_gesture": "边缘滑动打开设置",
   "settings.window.edge_gesture.support": "单指沿左上边缘滑到底部",
   "settings.window.three_finger_help": "三指下滑始终打开设置。",
-
   "settings.diagnostics.monitoring": "监视",
   "settings.diagnostics.latency": "媒体延迟监视",
   "settings.diagnostics.latency.support": "实时显示视频延迟、帧率和音频延迟",
@@ -248,11 +252,9 @@
   "settings.diagnostics.bluetooth": "蓝牙设置",
   "settings.diagnostics.bluetooth.support": "在系统设置中配对或忽略手机",
   "settings.diagnostics.summary": "下次握手",
-
   "settings.compat.title": "Android 9 兼容性",
   "settings.compat.p2p": "Wi-Fi P2P（5 GHz）不可用，改用 LocalOnlyHotspot。",
   "settings.compat.hevc": "软件 HEVC 解码器不可用，改用硬件解码。",
-
   "summary.handshake": "分辨率",
   "summary.waiting_display": "等待显示",
   "summary.scale": "缩放",
@@ -280,7 +282,6 @@
   "summary.audio_mapping.aaos": "AAOS 总线",
   "summary.audio_mapping.mobile": "手机兼容",
   "summary.safe_area": "安全区域",
-
   "crop.loading": "正在加载图片",
   "crop.help": "拖动移动，双指缩放",
   "crop.decode_failed": "无法解码图片",
@@ -288,7 +289,7 @@
   "crop.encode_failed": "无法编码图片",
   "crop.save_failed": "无法保存图片",
   "crop.save": "保存 1:1",
-
   "unit.fps": "{value} fps",
-  "unit.mm": "{value} mm"
+  "unit.mm": "{value} mm",
+  "settings.audio.quality.check_failed_reason": "原因：{reason}"
 }
