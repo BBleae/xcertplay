@@ -50,9 +50,10 @@ class AacEldFormatTest {
             InetAddress.getLoopbackAddress(), 1234, ByteArray(32),
             AudioCodecKind.AAC_ELD, 48_000, 512)
         assertEquals(512, config.samplesPerPacket)
-        assertEquals(512, config.rtpSamplesPerPacket)
         assertEquals(1024, config.frameBytes)
         val opus = config.copy(codec = AudioCodecKind.OPUS, frameMillis = 20, framesPerPacket = null)
-        assertEquals(960, opus.rtpSamplesPerPacket)
+        assertEquals(320, opus.samplesPerPacket)
+        assertEquals(480, opus.copy(sampleRate = 24_000).samplesPerPacket)
+        assertEquals(960, opus.copy(sampleRate = 48_000).samplesPerPacket)
     }
 }

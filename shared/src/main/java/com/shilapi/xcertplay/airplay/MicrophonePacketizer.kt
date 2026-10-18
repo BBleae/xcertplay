@@ -20,9 +20,6 @@ data class MicrophoneConfig(
     val samplesPerPacket: Int
         get() = framesPerPacket?.takeIf { it > 0 } ?: maxOf(1, sampleRate * frameMillis / 1000)
 
-    val rtpSamplesPerPacket: Int
-        get() = if (codec == AudioCodecKind.OPUS) 48_000 * frameMillis / 1000 else samplesPerPacket
-
     val frameBytes: Int
         get() = samplesPerPacket * channels * 2
 }

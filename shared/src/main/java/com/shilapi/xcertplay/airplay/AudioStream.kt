@@ -188,7 +188,7 @@ class AudioStream(
 
 /** Maps the phone's negotiated audioFormat bits to a decode/render format. */
 object AudioStreamCodec {
-    /** Opus input uses the selected rate; its RTP timestamp clock remains 48 kHz. */
+    /** Opus input uses the selected rate, and its RTP timestamp clock follows the same rate. */
     fun opusCaptureRate(bits: Long): Int = when {
         bits and 0x40000000L != 0L -> 48_000
         bits and 0x20000000L != 0L -> 24_000

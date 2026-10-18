@@ -377,8 +377,10 @@ class CarPlayMediaEngine(
         } else {
             format.sampleRate
         }
-        if (format.channels != 1 || micRate > 16_000) {
-            Log.w(TAG, "microphone format exceeds mono/16 kHz limit")
+        // 采集固定 16 kHz，速率由 PcmMonoResampler 变换到手机协商的速率，不再拒绝高速率；
+        // 只有 AAC-ELD 编码器是单声道的，LPCM 的多声道由 expandMonoPcm 复制。
+        if (format.codec == AudioCodecKind.AAC_ELD && format.channels != 1) {
+            Log.w(TAG, "microphone AAC-ELD requires mono, requested channels=${format.channels}")
             return null
         }
         val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0
